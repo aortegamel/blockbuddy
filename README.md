@@ -170,7 +170,7 @@ Do not interpret the primary chat runtime as proof that every ATM10 quest, machi
 General machine GUI automation and automatic quest reward claims are not implemented.
 Pack integration and actual audio quality require external checks.
 
-## Testing: six layers
+## Testing: five layers
 
 The repository separates deterministic checks from live model and Minecraft checks.
 Commands below describe how to run each layer. They do not claim that this checkout passed them.
@@ -269,14 +269,6 @@ Start the NeoForge client configuration with the IDE debugger.
 Compile the changed Java class while the debugger remains attached.
 Use the IDE's Reload Changed Classes action to apply standard JVM HotSwap.
 Standard HotSwap supports method-body edits. Restart the client after changes to fields, method signatures, registries, or resources.
-
-### 6. Continuous integration
-
-[The test workflow](.github/workflows/test.yml) runs on pushes and pull requests.
-It runs Python unittest discovery and the Java build with `runGameTestServer`.
-The Java job uses Temurin 21.
-Neither job starts a graphical Minecraft client or calls a real LLM.
-CI does not need the local Minescript jar or optional audio packages.
 
 ## Final ATM10 manual check
 

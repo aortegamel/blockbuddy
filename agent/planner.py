@@ -4,7 +4,7 @@ Usage:
   python agent/planner.py                            # fresh state, auto frontier
   python agent/planner.py --state data/state.json --out data/plan.json
 
-Backend: Groq free tier (GROQ_API_KEY) or Anthropic (ANTHROPIC_API_KEY) — see agent/llm.py.
+Backend: OpenAI-compatible server (BLOCKBUDDY_BASE_URL) — see agent/llm.py.
 """
 import argparse
 import json

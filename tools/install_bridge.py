@@ -6,7 +6,7 @@ with the system Python path only if Minescript hasn't generated one yet —
 if Minescript complains about config on first launch, delete config.txt and
 let the mod regenerate it, then re-run this script.
 
-Set AGENT_MC_DIR to your instance's minecraft/ (or .minecraft/) folder.
+Set BLOCKBUDDY_MC_DIR to your instance's minecraft/ (or .minecraft/) folder.
 """
 import os
 import shutil
@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-_mc = os.environ.get("AGENT_MC_DIR")
+_mc = os.environ.get("BLOCKBUDDY_MC_DIR")
 if not _mc:
-    sys.exit("set AGENT_MC_DIR to your Minecraft instance's minecraft/ folder")
+    sys.exit("set BLOCKBUDDY_MC_DIR to your Minecraft instance's minecraft/ folder")
 INSTANCE_MC = Path(_mc)
 SRC = ROOT / "bridge" / "minescript" / "agent_bridge.py"
 

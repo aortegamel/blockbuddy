@@ -69,9 +69,9 @@ class Actions:
             if not logs:
                 return False
             since = logs["latest"]
-            # ignore our own "[agent]" prompts — they mention '.done' and the chat
+            # ignore our own "[blockbuddy]" prompts — they mention '.done' and the chat
             # listener captures echoes, so without this the wait confirms itself
-            return any(".done" in e["message"].lower() and "[agent]" not in e["message"]
+            return any(".done" in e["message"].lower() and "[blockbuddy]" not in e["message"]
                        for e in logs["entries"])
         return self._wait(check, timeout, poll=2, desc="player to type .done in chat")
 
@@ -110,7 +110,7 @@ class Actions:
         chat = " | ".join(e["message"] for e in logs["entries"])
         if any(w in chat.lower() for w in CMD_ERRORS):
             if self.mp:
-                self.bridge.call("echo", text=f"[agent] no OP for /ftbquests — click quest "
+                self.bridge.call("echo", text=f"[blockbuddy] no OP for /ftbquests — click quest "
                                               f"{self._qname(qid)} in the book, then type .done")
                 if not self._wait_for_player_signal():
                     return False, f"no OP and player never confirmed quest {self._qname(qid)}"
@@ -162,7 +162,7 @@ class Actions:
             return self._inventory().get(item, 0) >= count
         if enough():
             return True, "already in inventory"
-        self.bridge.call("echo", text=f"[agent] waiting for {count}x {item} in YOUR inventory — "
+        self.bridge.call("echo", text=f"[blockbuddy] waiting for {count}x {item} in YOUR inventory — "
                                       f"if it's a quest reward, claim it in the book")
         grace = 45 if self.body == "companion" else step.get("timeout", 180)
         if self._wait(enough, timeout=grace, poll=3, desc=f"collect {item}"):
@@ -170,7 +170,7 @@ class Actions:
         if self.body != "companion":
             return False, f"{item} x{self._inventory().get(item, 0)}"
         self.log(f"  collect fallback: sending the companion to mine {item}")
-        self.bridge.call("echo", text=f"[agent] not appearing — Bob will go get {item} instead")
+        self.bridge.call("echo", text=f"[blockbuddy] not appearing — Bob will go get {item} instead")
         ok, note = self.agent_mine({"block": step["item"], "count": count,
                                     "timeout": step.get("timeout", 600)})
         if not ok:
@@ -291,25 +291,25 @@ class Actions:
         if self._inventory().get(item, 0) >= count:
             return True, "already in inventory"
         for attempt in (1, 2):
-            self.bridge.call("echo", text=f"[agent] please CRAFT {count}x {item}, then type .done")
+            self.bridge.call("echo", text=f"[blockbuddy] please CRAFT {count}x {item}, then type .done")
             self.log(f"CRAFT request: {count}x {item} (attempt {attempt})")
             if not self._wait_for_player_signal():
                 return False, f"no confirmation for crafting {item}"
             have = self._inventory().get(item, 0)
             if have >= count:
                 return True, f"crafted (verified {have} in inventory)"
-            self.bridge.call("echo", text=f"[agent] I only see {have}/{count} {item} — really crafted?")
+            self.bridge.call("echo", text=f"[blockbuddy] I only see {have}/{count} {item} — really crafted?")
         return False, f"{item} still missing after 2 confirmations"
 
     def smelt(self, step):
         item, count = self._bare(step["item"]), int(step.get("count", 1))
         out = self._bare(step.get("output", step["item"]))
-        self.bridge.call("echo", text=f"[agent] please SMELT {count}x {item}, then type .done")
+        self.bridge.call("echo", text=f"[blockbuddy] please SMELT {count}x {item}, then type .done")
         if not self._wait_for_player_signal():
             return False, "no confirmation for smelting"
         return True, f"smelt confirmed ({self._inventory().get(out, 0)} {out} in inventory)"
 
-    # -- PlayerEngine agent companion (agentlink mod) -------------------------
+    # -- PlayerEngine companion (in-game mod) ---------------------------------
 
     def agent_state(self, timeout=10):
         """Query the companion via /agent state; parse the [agentstate] JSON line."""
@@ -370,7 +370,7 @@ class Actions:
                     wx = int(home[0] + ring * math.cos(ang))
                     wz = int(home[2] + ring * math.sin(ang))
                     self.log(f"  agent idle — exploring toward {wx},{wz} (ring {ring})")
-                    self.bridge.call("echo", text=f"[agent] no {want} here — scouting {wx},{wz}")
+                    self.bridge.call("echo", text=f"[blockbuddy] no {want} here — scouting {wx},{wz}")
                     self.bridge.call("chat", text=f"/agent run goto {wx} {int(pos[1])} {wz}")
                     leg += 1
                     if leg % 8 == 0:
@@ -455,7 +455,7 @@ class Actions:
         if isinstance(at, dict) and "x" in at:
             self.bridge.call("chat", text=f"#goto {int(at['x'])} {int(at['y'])} {int(at['z'])}")
             self._baritone_idle(timeout=step.get("timeout", 180))
-        self.bridge.call("echo", text=f"[agent] open this chest and take {count}x {item}, "
+        self.bridge.call("echo", text=f"[blockbuddy] open this chest and take {count}x {item}, "
                                       f"then type .done")
         if not self._wait_for_player_signal():
             return False, f"player never confirmed taking {item}"
@@ -474,7 +474,7 @@ class Actions:
 
     def manual(self, step):
         reason = step.get("reason", "unsupported action")
-        self.bridge.call("echo", text=f"[agent] NEED HELP: {reason} — do it, then type .done in chat")
+        self.bridge.call("echo", text=f"[blockbuddy] NEED HELP: {reason} — do it, then type .done in chat")
         self.log(f"MANUAL ESCALATION: {reason}")
         if not self._wait_for_player_signal():
             return False, "player never confirmed manual step"
@@ -530,7 +530,7 @@ class Actions:
         ok, note = handler(action)
         health_after = (self.bridge.call("state") or {}).get("health")
         if health_before and health_after and health_after < min(6, health_before - 8):
-            self.bridge.call("echo", text="[agent] taking heavy damage — pausing, type .done when safe")
+            self.bridge.call("echo", text="[blockbuddy] taking heavy damage — pausing, type .done when safe")
             self.log(f"DANGER: health {health_before} -> {health_after}")
             self._wait_for_player_signal(timeout=300)
         return ok, note

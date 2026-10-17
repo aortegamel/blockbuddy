@@ -2,9 +2,9 @@ plugins {
     id 'net.minecraftforge.gradle' version '[6.0,6.2)'
 }
 
-group = 'dev.questpilot'
+group = 'dev.blockbuddy'
 version = "0.4.1"
-base { archivesName = 'agentlink' }
+base { archivesName = 'blockbuddy' }
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 
@@ -22,7 +22,7 @@ dependencies {
 
 jar {
     manifest {
-        attributes 'Implementation-Title': 'agentlink',
+        attributes 'Implementation-Title': 'blockbuddy',
                    'Implementation-Version': project.version
     }
 }

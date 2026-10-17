@@ -1,4 +1,4 @@
-package dev.questpilot.agentlink;
+package dev.blockbuddy;
 
 import com.goodbird.player2npc.companion.AutomatoneEntity;
 import com.mojang.brigadier.CommandDispatcher;
@@ -33,24 +33,26 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * /agent spawn [name]        — summon a PlayerEngine agent next to the caller
- * /agent run <cmdline>       — feed an AltoClef command to the nearest agent
+ * /blockbuddy spawn [name]  — summon a PlayerEngine agent next to the caller
+ * /blockbuddy run <cmdline> — feed an AltoClef command to the nearest agent
  *                              (get/goto/follow/attack/farm/deposit/equip/...)
- * /agent mine <block> [n]    — MineAndCollectTask on ANY registered block,
+ * /blockbuddy mine <block> [n] — MineAndCollectTask on ANY registered block,
  *                              including modded ids (kubejs:dead_log 16)
- * /agent state               — one-line JSON status (pos/health/inventory),
+ * /blockbuddy state         — one-line JSON status (pos/health/inventory),
  *                              echoed to chat for the daemon's chat_log reader
- * /agent stop                — shortcut for run stop
+ * /blockbuddy stop          — shortcut for run stop
+ *
+ * (/agent stays as a short alias.)
  *
  * The external planner daemon issues these through the Minescript chat bridge,
  * so the LLM brain stays outside the game while PlayerEngine provides the body.
  */
-public final class AgentCommand {
+public final class BlockBuddyCommand {
 
-    private AgentCommand() {}
+    private BlockBuddyCommand() {}
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
-        dispatcher.register(Commands.literal("agent")
+        var root = Commands.literal("blockbuddy")
             .requires(src -> src.hasPermission(2))
             .then(Commands.literal("spawn")
                 .executes(ctx -> spawn(ctx.getSource(), "Agent"))
@@ -84,7 +86,9 @@ public final class AgentCommand {
             .then(Commands.literal("state")
                 .executes(ctx -> state(ctx.getSource())))
             .then(Commands.literal("stop")
-                .executes(ctx -> run(ctx.getSource(), "stop"))));
+                .executes(ctx -> run(ctx.getSource(), "stop")));
+        var node = dispatcher.register(root);
+        dispatcher.register(Commands.literal("agent").redirect(node));
     }
 
     private static AutomatoneEntity nearest(ServerPlayer player) {
@@ -99,7 +103,7 @@ public final class AgentCommand {
         ServerPlayer player = src.getPlayerOrException();
         AutomatoneEntity agent = nearest(player);
         if (agent == null || agent.controller == null) {
-            src.sendFailure(Component.literal("[agentlink] no controllable agent nearby"));
+            src.sendFailure(Component.literal("[blockbuddy] no controllable agent nearby"));
             return 0;
         }
         String[] parts = spec.trim().split("\\s+");
@@ -107,13 +111,13 @@ public final class AgentCommand {
         ResourceLocation id = ResourceLocation.tryParse(parts[0]);
         Block block = id == null ? null : ForgeRegistries.BLOCKS.getValue(id);
         if (block == null || block == Blocks.AIR) {
-            src.sendFailure(Component.literal("[agentlink] unknown block: " + parts[0]));
+            src.sendFailure(Component.literal("[blockbuddy] unknown block: " + parts[0]));
             return 0;
         }
         agent.controller.runUserTask(new MineAndCollectTask(
                 block.asItem(), count, new Block[]{block},
                 MiningRequirement.getMinimumRequirementForBlock(block)));
-        src.sendSuccess(() -> Component.literal("[agentlink] mining " + count + "x " + id), false);
+        src.sendSuccess(() -> Component.literal("[blockbuddy] mining " + count + "x " + id), false);
         return 1;
     }
 
@@ -124,11 +128,11 @@ public final class AgentCommand {
         ServerPlayer player = src.getPlayerOrException();
         AutomatoneEntity agent = nearest(player);
         if (agent == null || agent.getLivingInventory() == null) {
-            src.sendFailure(Component.literal("[agentlink] no agent nearby"));
+            src.sendFailure(Component.literal("[blockbuddy] no agent nearby"));
             return 0;
         }
         if (agent.distanceToSqr(player) > 64.0) {
-            src.sendFailure(Component.literal("[agentlink] agent too far to hand over — `/agent run follow` first"));
+            src.sendFailure(Component.literal("[blockbuddy] agent too far to hand over — `/blockbuddy run follow` first"));
             return 0;
         }
         String[] parts = spec.trim().split("\\s+");
@@ -149,7 +153,7 @@ public final class AgentCommand {
         }
         final int total = moved;
         src.sendSuccess(() -> Component.literal(
-                "[agentlink] handed over " + total + "x " + itemName), false);
+                "[blockbuddy] handed over " + total + "x " + itemName), false);
         return total > 0 ? 1 : 0;
     }
 
@@ -268,14 +272,14 @@ public final class AgentCommand {
         ServerPlayer player = src.getPlayerOrException();
         AutomatoneEntity agent = nearest(player);
         if (agent == null || agent.getLivingInventory() == null || agent.controller == null) {
-            src.sendFailure(Component.literal("[agentlink] no controllable agent nearby"));
+            src.sendFailure(Component.literal("[blockbuddy] no controllable agent nearby"));
             return 0;
         }
         String[] parts = spec.trim().split("\\s+");
         Item target = resolveItem(parts[0]);
         int wanted = parts.length > 1 ? Integer.parseInt(parts[1]) : 1;
         if (target == null) {
-            src.sendFailure(Component.literal("[agentlink] unknown item: " + parts[0]));
+            src.sendFailure(Component.literal("[blockbuddy] unknown item: " + parts[0]));
             return 0;
         }
         boolean ok = craftRecursive(player, agent, target, wanted, 4);
@@ -283,10 +287,10 @@ public final class AgentCommand {
         final ResourceLocation rid = ForgeRegistries.ITEMS.getKey(target);
         if (ok) {
             src.sendSuccess(() -> Component.literal(
-                    "[agentlink] crafted: agent now has " + have + "x " + rid), false);
+                    "[blockbuddy] crafted: agent now has " + have + "x " + rid), false);
             return 1;
         }
-        src.sendFailure(Component.literal("[agentlink] cannot craft " + parts[0]
+        src.sendFailure(Component.literal("[blockbuddy] cannot craft " + parts[0]
                 + " — missing base ingredients (agent has " + have + ")"));
         return 0;
     }
@@ -298,7 +302,7 @@ public final class AgentCommand {
         ServerPlayer player = src.getPlayerOrException();
         AutomatoneEntity agent = nearest(player);
         if (agent == null || agent.getLivingInventory() == null) {
-            src.sendFailure(Component.literal("[agentlink] no agent nearby"));
+            src.sendFailure(Component.literal("[blockbuddy] no agent nearby"));
             return 0;
         }
         String[] parts = spec.trim().split("\\s+");
@@ -341,7 +345,7 @@ public final class AgentCommand {
         final int total = moved;
         final String verb = take ? "took" : "stored";
         src.sendSuccess(() -> Component.literal(
-                "[agentlink] " + verb + " " + total + "x " + itemName), false);
+                "[blockbuddy] " + verb + " " + total + "x " + itemName), false);
         return total > 0 ? 1 : 0;
     }
 
@@ -384,12 +388,12 @@ public final class AgentCommand {
         // Local dummy character — no Player2 account involved. The cloud
         // greeting inside init() fails silently without auth; harmless.
         Character character = new Character(
-                "agentlink-" + name.toLowerCase(), name, name,
-                "", "Reclamation quest agent (external planner)", "", new String[0]);
+                "blockbuddy-" + name.toLowerCase(), name, name,
+                "", "BlockBuddy agent (external planner)", "", new String[0]);
         AutomatoneEntity agent = new AutomatoneEntity(player.level(), character, player);
         agent.setPos(player.getX() + 1.0, player.getY(), player.getZ());
         player.serverLevel().addFreshEntity(agent);
-        src.sendSuccess(() -> Component.literal("[agentlink] spawned agent '" + name + "'"), false);
+        src.sendSuccess(() -> Component.literal("[blockbuddy] spawned agent '" + name + "'"), false);
         return 1;
     }
 
@@ -397,15 +401,15 @@ public final class AgentCommand {
         ServerPlayer player = src.getPlayerOrException();
         AutomatoneEntity agent = nearest(player);
         if (agent == null) {
-            src.sendFailure(Component.literal("[agentlink] no agent within 64 blocks — /agent spawn first"));
+            src.sendFailure(Component.literal("[blockbuddy] no agent within 64 blocks — /blockbuddy spawn first"));
             return 0;
         }
         if (agent.controller == null) {
-            src.sendFailure(Component.literal("[agentlink] agent has no controller (spawned without character?)"));
+            src.sendFailure(Component.literal("[blockbuddy] agent has no controller (spawned without character?)"));
             return 0;
         }
         agent.controller.getCommandExecutor().executeWithPrefix(cmd);
-        src.sendSuccess(() -> Component.literal("[agentlink] -> " + cmd), false);
+        src.sendSuccess(() -> Component.literal("[blockbuddy] -> " + cmd), false);
         return 1;
     }
 }

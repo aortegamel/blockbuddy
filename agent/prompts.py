@@ -2,15 +2,15 @@
 with the in-game actuators — every step the planner emits must use one of
 these actions, so plans stay executable.
 
-Two body modes (RECLAMATION_BODY):
+Two body modes (BLOCKBUDDY_BODY):
   companion — a PlayerEngine entity does the work while the player is free
   player    — the AI drives the PLAYER's own body (client-side only: works on
               any server with zero server-side mods)
 """
 
 _HEADER = """\
-You are the strategic planner for an autonomous agent playing the Minecraft \
-modpack "Reclamation - Reclaim the World!" (1.20.1 Forge). The world is barren: \
+You are the strategic planner for an autonomous agent playing a heavily customized \
+Minecraft quest modpack (1.20.1 Forge). The world is barren: \
 no ores underground, dirt is scarce, resources come from processing, plants \
 (Mystical Agriculture, AgriCraft), bees, and mod machines. Progression follows \
 an FTB Quests book; you are given the quest dependency graph and current game \
@@ -79,7 +79,7 @@ implements these and nothing else):
 """
 
 _WORLD_FACTS = """\
-WORLD FACTS — Reclamation overrides vanilla Minecraft; NEVER assume vanilla resources:
+WORLD FACTS — this pack overrides vanilla Minecraft; NEVER assume vanilla resources:
 - There are NO living trees and NO vanilla logs (no minecraft:oak_log etc. exist
   anywhere). Wood comes from DEAD TREES: mine "kubejs:dead_log". Planks are
   "kubejs:flimsy_planks" (crafted from dead logs). Sticks come from flimsy planks.

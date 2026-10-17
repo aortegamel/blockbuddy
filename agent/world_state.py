@@ -13,8 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import snbt
 
-# Point AGENT_MC_DIR at your instance's minecraft/ (or .minecraft/) folder
-INSTANCE = Path(os.environ.get("AGENT_MC_DIR", "."))
+# Point BLOCKBUDDY_MC_DIR at your instance's minecraft/ (or .minecraft/) folder
+INSTANCE = Path(os.environ.get("BLOCKBUDDY_MC_DIR", "."))
 
 
 def find_world(name=None):
@@ -42,7 +42,7 @@ def _walk_completed(node, found):
 
 def _quest_data_root(world_dir):
     """FTB Quests progress lives at <world>/ftbquests/ in singleplayer saves
-    (verified on Reclamation 2.3.2); older/server layouts use serverdata/."""
+    (verified on the current pack); older/server layouts use serverdata/."""
     for rel in ("ftbquests", "serverdata/ftbquests"):
         root = Path(world_dir) / rel
         if root.exists():

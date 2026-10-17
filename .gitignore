@@ -9,7 +9,7 @@ data/*
 vendor/
 
 # mod build artifacts + local jars
-agentlink-mod/build/
-agentlink-mod/.gradle/
-agentlink-mod/libs/
-agentlink-mod/run/
+blockbuddy-mod/build/
+blockbuddy-mod/.gradle/
+blockbuddy-mod/libs/
+blockbuddy-mod/run/

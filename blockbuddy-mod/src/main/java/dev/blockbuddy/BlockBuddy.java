@@ -1,19 +1,19 @@
-package dev.questpilot.agentlink;
+package dev.blockbuddy;
 
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
-@Mod("agentlink")
-public class AgentLink {
+@Mod("blockbuddy")
+public class BlockBuddy {
 
-    public AgentLink() {
+    public BlockBuddy() {
         MinecraftForge.EVENT_BUS.register(this);
     }
 
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
-        AgentCommand.register(event.getDispatcher());
+        BlockBuddyCommand.register(event.getDispatcher());
     }
 }

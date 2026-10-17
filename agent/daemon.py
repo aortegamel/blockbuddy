@@ -1,7 +1,7 @@
 """Agent daemon — runs OUTSIDE the game. The in-game bridge connects to us.
 
 Usage:
-  python agent/daemon.py                     # LLM planning loop (needs GROQ_API_KEY or ANTHROPIC_API_KEY)
+  python agent/daemon.py                     # LLM planning loop (needs BLOCKBUDDY_BASE_URL, e.g. a local opencode server)
   python agent/daemon.py --plan data/sample_plan_session1.json   # run a fixed plan, no LLM
   python agent/daemon.py --probe             # connect, print bridge capabilities + state, exit
 
@@ -10,7 +10,6 @@ Start this first, then in Minecraft chat run:  \\agent_bridge
 import argparse
 import json
 import os
-import shutil
 import socket
 import sys
 import time
@@ -143,7 +142,7 @@ def survey(bridge):
         else {"notes": [], "containers": {}}
     containers = base.setdefault("containers", {})
     log("SURVEY: walk your base and open every chest/machine; type .done in chat to finish")
-    bridge.call("echo", text="[agent] survey mode — open chests/machines one by one, type .done when finished")
+    bridge.call("echo", text="[blockbuddy] survey mode — open chests/machines one by one, type .done when finished")
     first = bridge.call("chat_log", since=0)
     since = first["latest"] if first else 0
     last_screen = None
@@ -182,19 +181,19 @@ def survey(bridge):
                 if containers.get(key) != entry:
                     containers[key] = entry
                     log(f"recorded '{screen}' @ {key}: {len(agg)} item types")
-                    bridge.call("echo", text=f"[agent] recorded ({len(agg)} item types) — next one")
+                    bridge.call("echo", text=f"[blockbuddy] recorded ({len(agg)} item types) — next one")
         last_screen = screen
         logs = bridge.call("chat_log", since=since)
         if logs:
             since = logs["latest"]
-            if any(".done" in e["message"].lower() and "[agent]" not in e["message"]
+            if any(".done" in e["message"].lower() and "[blockbuddy]" not in e["message"]
                    for e in logs["entries"]):
                 break
         time.sleep(1)
     BASE_PATH.write_text(json.dumps(base, indent=1), encoding="utf-8")
     total_types = len({i for c in containers.values() for i in c["items"]})
     log(f"survey saved: {len(containers)} containers, {total_types} distinct item types -> {BASE_PATH}")
-    bridge.call("echo", text=f"[agent] survey done: {len(containers)} containers recorded")
+    bridge.call("echo", text=f"[blockbuddy] survey done: {len(containers)} containers recorded")
 
 
 def run_plan(bridge, world, plan, actions, mark_complete=None):
@@ -234,7 +233,7 @@ def main():
                     help="learn the base: record every container the player opens")
     ap.add_argument("--base", default=None, help="base knowledge file (default: "
                     "data/base_mp.json with --mp, data/base_sp.json otherwise)")
-    ap.add_argument("--body", default=os.environ.get("RECLAMATION_BODY", "companion"),
+    ap.add_argument("--body", default=os.environ.get("BLOCKBUDDY_BODY", "companion"),
                     choices=["companion", "player"],
                     help="companion = PlayerEngine entity does the work (needs server-side "
                          "mods); player = the AI drives YOUR character (client-side only, "
@@ -284,7 +283,7 @@ def main():
     actions = Actions(bridge, get_completed, log, mp=args.mp, mark_complete=mark_complete,
                       body=args.body)
     log(f"body mode: {args.body}")
-    bridge.call("echo", text=f"[agent] online ({args.body} mode) — starting work")
+    bridge.call("echo", text=f"[blockbuddy] online ({args.body} mode) — starting work")
 
     if args.body == "companion":
         # make sure a PlayerEngine companion exists in THIS world
@@ -335,7 +334,6 @@ def main():
                 actions.quest_checkmark({"quest_id": quest["id"]})
     fail_counts = {}
     blocked = set()
-    escalate_next = False  # after 2 failures, the strong model gets one shot
     directive = {"text": None, "chat_seen": 0}
     session_start_done = len(get_completed() & set(quest_index))
 
@@ -345,15 +343,15 @@ def main():
         directive["chat_seen"] = logs.get("latest", directive["chat_seen"])
         for entry in logs.get("entries", []):
             msg = entry["message"]
-            if "[agent" in msg or ".goal" not in msg.lower():
+            if "[blockbuddy" in msg or ".goal" not in msg.lower():
                 continue
             text = msg.lower().split(".goal", 1)[1].strip()
             if text == "clear":
                 directive["text"] = None
-                bridge.call("echo", text="[agent] directive cleared — back to autonomous questing")
+                bridge.call("echo", text="[blockbuddy] directive cleared — back to autonomous questing")
             elif text:
                 directive["text"] = text
-                bridge.call("echo", text=f"[agent] directive accepted: {text}")
+                bridge.call("echo", text=f"[blockbuddy] directive accepted: {text}")
                 log(f"player directive: {text}")
 
     for cycle in range(args.max_cycles):
@@ -366,7 +364,7 @@ def main():
             log("frontier empty — all reachable quests complete (or blocked)!")
             break
         log(f"cycle {cycle + 1}: {len(completed)} done, {len(frontier)} on frontier; planning via {llm.provider()}")
-        bridge.call("echo", text=f"[agent] quest progress: {len(completed)}/{len(quest_index)} — planning next moves...")
+        bridge.call("echo", text=f"[blockbuddy] quest progress: {len(completed)}/{len(quest_index)} — planning next moves...")
         order = {c["filename"]: c["order_index"] for c in graph["chapters"]}
         frontier.sort(key=lambda q: (order.get(q["chapter"], 99), q["title"]))
         prompt = planner.build_planner_prompt(planner.chapter_summary(graph), frontier, game_state)
@@ -375,43 +373,36 @@ def main():
                        f"selection toward this): {directive['text']}")
         # planning can transiently fail (LLM rate limit, malformed JSON) — retry,
         # then skip this cycle rather than crashing the whole session
-        planner_chain = None
-        if escalate_next and shutil.which("claude"):
-            planner_chain = ["claude-cli"]
-            log("escalating this plan to the strong model (repeated quest failure)")
-            escalate_next = False
         plan = None
         for attempt in range(3):
             try:
                 plan = planner.extract_json(
-                    llm.complete(prompts.get_system(args.body), prompt, chain=planner_chain))
+                    llm.complete(prompts.get_system(args.body), prompt))
                 break
             except Exception as exc:
                 log(f"planning attempt {attempt + 1} failed: {exc}")
                 time.sleep(10)
         if plan is None:
             log("planning failed 3x — waiting 60s before next cycle")
-            bridge.call("echo", text="[agent] planner unavailable, will retry")
+            bridge.call("echo", text="[blockbuddy] planner unavailable, will retry")
             time.sleep(60)
             continue
         targets = ", ".join(t["title"] for t in plan.get("target_quests", [])[:5])
         log(f"plan: {len(plan.get('steps', []))} steps targeting: {targets}")
-        bridge.call("echo", text=f"[agent] working on: {targets[:120]}")
+        bridge.call("echo", text=f"[blockbuddy] working on: {targets[:120]}")
         done, failed = run_plan(bridge, world, plan, actions, mark_complete)
         if failed:
             qid = failed.get("for_quest")
             fail_counts[qid] = fail_counts.get(qid, 0) + 1
-            if qid and fail_counts[qid] == 2:
-                escalate_next = True  # strong model gets one shot before we give up
             if qid and fail_counts[qid] >= 3:
                 blocked.add(qid)
                 log(f"quest {qid} failed {fail_counts[qid]} plans — blocking it this session")
-                bridge.call("echo", text=f"[agent] giving up on quest {qid} for now — "
+                bridge.call("echo", text=f"[blockbuddy] giving up on quest {qid} for now — "
                                          f"may need your help with it later")
             log(f"replanning after failure at step {failed.get('n')}")
     final_done = len(get_completed() & set(quest_index))
     gained = final_done - session_start_done
-    summary = (f"[agent] session over — {final_done}/{len(quest_index)} quests total, "
+    summary = (f"[blockbuddy] session over — {final_done}/{len(quest_index)} quests total, "
                f"+{gained} this session")
     log(summary)
     bridge.call("echo", text=summary)

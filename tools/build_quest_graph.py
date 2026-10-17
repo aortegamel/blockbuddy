@@ -1,4 +1,4 @@
-"""Build quest_graph.json from the Reclamation pack's FTB Quests SNBT files.
+"""Build quest_graph.json from the ATM9 pack's FTB Quests SNBT files.
 
 Reads chapters/*.snbt + the ftbquestlocalizer lang file, resolves titles and
 descriptions, flattens tasks/rewards/dependencies, and emits a single JSON
@@ -142,7 +142,7 @@ def main():
     has_cycle = seen != len(all_ids)
 
     graph = {
-        "pack": "Reclamation 2.3.2",
+        "pack": "ATM9",
         "minecraft": "1.20.1",
         "modloader": "forge-47.4.0",
         "chapters": chapters_out,

@@ -1,17 +1,27 @@
-# MineMind ⛏️🧠
+# BlockBuddy
 
 **An autonomous AI player for _modded_ Minecraft.**
 
-MineMind reads your modpack's quest book, plans with an LLM, and sends a
+BlockBuddy reads your modpack's quest book, plans with an LLM, and sends a
 server-side AI companion to do the work — mining, crafting (modded recipes
-included), fighting, hauling — while you keep playing. It is, as far as we
-know, the first open agent that plays **modpacks**, not just vanilla.
+included), fighting, hauling — while you keep playing. It is built for
+**modpacks**, not just vanilla.
 
-> `/agent spawn Bob` → the planner reads 558 FTB quests → Bob walks off,
-> mines 16 dead logs, crafts them through a two-step modded recipe chain,
+> `/blockbuddy spawn Bob` → the planner reads the pack's FTB quests → Bob walks off,
+> mines the logged materials, crafts them through the modded recipe chain,
 > comes back and hands you the result. Nobody touched the keyboard.
 
 ---
+
+## Target pack: ATM9 (Forge 1.20.1)
+
+BlockBuddy is **Forge-only**: Minecraft 1.20.1, Forge 47.x, JDK 17.
+The reference pack is **All the Mods 9 (ATM9)** — the last All the Mods line
+built for Forge on 1.20.1. Its successor ATM10 moved to NeoForge on
+Minecraft 1.21.1, so ATM9 is the current Forge ATM target.
+Sources: [ATM9 on CurseForge](https://www.curseforge.com/minecraft/modpacks/all-the-mods-9)
+(Forge, 1.20.1) and [ATM10 files](https://www.curseforge.com/minecraft/modpacks/all-the-mods-10/files/all)
+(NeoForge, 1.21.1).
 
 ## Why this exists
 
@@ -26,31 +36,32 @@ Every well-known Minecraft AI project is **vanilla-only**:
 
 Modded Minecraft — custom blocks, kubejs recipes, machine GUIs, 500-quest
 progression books — is where the actually interesting automation problems
-live. MineMind targets exactly that gap.
+live. BlockBuddy targets exactly that gap.
 
 ## What it does today
 
 - **Reads the whole quest book offline.** FTB Quests SNBT → dependency DAG
   (chapters, quests, item tasks, rewards). The planner always knows the exact
   frontier of available quests — no screen reading, no guessing.
-- **Plans with any LLM.** Claude (API or your Claude Code login), Groq's free
-  tier, or anything you wire into one small provider file. Sonnet-class models
-  are the sweet spot: the prompt carries the world facts and action vocabulary,
-  so the model plans rather than reasons from scratch
-  (`RECLAMATION_CLAUDE_MODEL=claude-sonnet-4-6`).
+- **Plans with any OpenAI-compatible brain.** Default is your local
+  [opencode](https://opencode.ai) server; anything that serves
+  `POST {base}/chat/completions` works. The prompt carries the world facts
+  and action vocabulary, so the model plans rather than reasons from scratch
+  (`BLOCKBUDDY_MODEL=opencode-default`).
 - **Acts through a real body.** A [PlayerEngine](https://www.curseforge.com/minecraft/mc-mods/playerengine)
   companion entity — server-side, pathfinding by Automatone (Baritone fork),
-  AltoClef task chains — plus our `agentlink` micro-mod that exposes it to the
+  AltoClef task chains — plus our `blockbuddy` micro-mod that exposes it to the
   planner:
-  - `/agent mine <block> [n]` — mine **any** registered block, modded ids included
-  - `/agent craft <item> [n]` — craft **any** recipe from the game's RecipeManager
+  - `/blockbuddy mine <block> [n]` — mine **any** registered block, modded ids included
+  - `/blockbuddy craft <item> [n]` — craft **any** recipe from the game's RecipeManager
     (kubejs/datapack recipes work), resolving intermediate ingredients
     **recursively** (log → scrap → planks happens automatically)
-  - `/agent take|store <item> [n]` — move items between the agent and nearby
+  - `/blockbuddy take|store <item> [n]` — move items between the agent and nearby
     chests or machine slots (any `IItemHandler`)
-  - `/agent give <item> [n]` — hand the loot to the player (quests check *your* inventory)
-  - `/agent run <cmd>` — the whole AltoClef command set: `follow`, `goto`,
+  - `/blockbuddy give <item> [n]` — hand the loot to the player (quests check *your* inventory)
+  - `/blockbuddy run <cmd>` — the whole AltoClef command set: `follow`, `goto`,
     `attack`, `farm`, `deposit`, `equip`, ...
+  - (`/agent` works as a short alias for `/blockbuddy`.)
 - **Verifies everything.** Inventory deltas, quest-save reads, chat-response
   checks. Failed steps trigger replanning; repeatedly failing quests get set
   aside instead of looping.
@@ -60,7 +71,7 @@ live. MineMind targets exactly that gap.
 - **Escalates gracefully.** What it can't do yet (machine GUIs, claiming
   quest rewards), it asks for in chat and waits for your `.done`.
 
-Live-tested on **Reclamation** (Forge 1.20.1, 165 mods, 558 quests) — the
+Live-tested on Forge 1.20.1 with a 500+ quest FTB pack — the
 companion autonomously mined modded blocks, crafted through modded recipe
 chains, and progressed real quests.
 
@@ -69,8 +80,8 @@ chains, and progressed real quests.
 ```
 ┌─ your PC ────────────────────────────────────────────────────────────┐
 │                                                                      │
-│  daemon.py  ──plans──▶  LLM (Claude / Groq / local)                  │
-│    │  ▲                                                              │
+│  daemon.py  ──plans──▶  brain: OpenAI-compatible POST                 │
+│    │  ▲                  {BLOCKBUDDY_BASE_URL}/chat/completions        │
 │    │  └── quest_graph.json  (built offline from the pack's           │
 │    │       FTB Quests SNBT — full dependency DAG)                    │
 │    ▼                                                                 │
@@ -78,7 +89,7 @@ chains, and progressed real quests.
 │    ▲                                                                 │
 │ ┌──┴───────────────── Minecraft (Forge) ──────────────────────────┐  │
 │ │ Minescript bridge  ── chat/state/inventory I/O                  │  │
-│ │ agentlink mod      ── /agent commands → PlayerEngine controller │  │
+│ │ blockbuddy mod     ── /blockbuddy commands → PlayerEngine ctrl  │  │
 │ │ PlayerEngine       ── companion entity: Automatone pathfinding, │  │
 │ │                       AltoClef task chains, own inventory       │  │
 │ └──────────────────────────────────────────────────────────────────┘ │
@@ -91,32 +102,58 @@ only does what models are good at: deciding what to do next.
 
 ## Quick start
 
-**Requirements:** a Forge 1.20.1 instance, Python 3.10+, JDK 17+ (only to
-build the mod), and one of: `GROQ_API_KEY` (free), `ANTHROPIC_API_KEY`, or a
-logged-in Claude Code CLI.
+**Requirements:** a Forge 1.20.1 instance (ATM9), Python 3.10+, JDK 17+ (only to
+build the mod), and a brain (local opencode server by default — see `.env` below).
 
 ```bash
-git clone https://github.com/Boyan253/minemind && cd minemind
+git clone <repo-url> && cd blockbuddy
 
 # 1. mods into your instance's mods/ folder:
 #    - PlayerEngine + Player2NPC (CurseForge, Forge 1.20.1)
 #    - Baritone (optional, for player-body fallback) + Minescript
-#    - agentlink: cd agentlink-mod && ./gradlew build   → build/libs/*.jar
+#    - blockbuddy: cd blockbuddy-mod && ./gradlew build   → build/libs/*.jar
 
 # 2. point the tools at your instance and install the bridge
-export AGENT_MC_DIR="/path/to/instance/minecraft"
+export BLOCKBUDDY_MC_DIR="/path/to/instance/minecraft"
 python tools/install_bridge.py
 
 # 3. build the quest graph from your pack (FTB Quests packs)
 python tools/build_quest_graph.py
 
 # 4. run the brain, then in-game chat:  \agent_bridge
-export GROQ_API_KEY=...        # or ANTHROPIC_API_KEY, or claude-cli login
 python agent/daemon.py
 ```
 
 The daemon spawns a companion if none exists and starts working the quest
-frontier. Type `#stop` / `/agent stop` in chat any time to halt it.
+frontier. Type `#stop` / `/blockbuddy stop` in chat any time to halt it.
+
+## Brain setup (`.env`)
+
+Copy the example if one ships with your checkout, or create `.env` in the repo root:
+
+```bash
+BLOCKBUDDY_BASE_URL=http://localhost:4096/v1
+BLOCKBUDDY_API_KEY=
+BLOCKBUDDY_MODEL=opencode-default
+HERMES_URL=
+HERMES_API_KEY=
+```
+
+- Defaults assume an opencode server on localhost (`opencode serve`):
+  `BLOCKBUDDY_BASE_URL` defaults to `http://localhost:4096/v1`,
+  `BLOCKBUDDY_API_KEY` defaults to empty, `BLOCKBUDDY_MODEL` defaults to
+  `opencode-default`.
+- Any OpenAI-compatible endpoint works: set `BLOCKBUDDY_BASE_URL` to its base
+  URL and `BLOCKBUDDY_MODEL` to the model name. The daemon sends
+  `POST {BLOCKBUDDY_BASE_URL}/chat/completions`.
+- The daemon loads `.env` via dotenv at startup; exported environment
+  variables override `.env` values.
+
+### Hermes wiki gateway (stub)
+
+`HERMES_URL` / `HERMES_API_KEY` point at the Hermes wiki gateway, which serves
+pack wiki lookups to the planner. This release only reads the two variables —
+the gateway client is a stub. Leave them empty to run without wiki context.
 
 ## Status
 
@@ -133,7 +170,7 @@ Early alpha, moving fast. Honest state of the world:
 
 ## Credits
 
-MineMind stands on excellent shoulders:
+BlockBuddy stands on excellent shoulders:
 [PlayerEngine](https://github.com/Goodbird-git/PlayerEngine) by Goodbird ·
 [Automatone](https://github.com/Ladysnake/Automatone) by Ladysnake ·
 [AltoClef](https://github.com/gaucho-matrero/altoclef) ·
@@ -143,5 +180,7 @@ MineMind stands on excellent shoulders:
 
 ## License
 
-MIT for everything in this repo. PlayerEngine/Player2NPC (LGPL-3.0) and other
-mods are **not** bundled — download them from their own pages.
+MIT for everything in this repo — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+PlayerEngine/Player2NPC (LGPL-3.0) and other client mods are **runtime-only**:
+they are **not** bundled, only downloaded separately into your instance's
+`mods/` folder.

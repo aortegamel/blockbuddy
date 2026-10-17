@@ -3,38 +3,37 @@ loaderVersion = "[47,)"
 license = "MIT"
 
 [[mods]]
-modId = "agentlink"
+modId = "blockbuddy"
 version = "0.4.1"
-displayName = "AgentLink"
+displayName = "BlockBuddy"
 description = '''
-Exposes PlayerEngine agents to an external planner via /agent commands.
-Part of the Reclamation Agent project.
+Exposes PlayerEngine agents to an external planner via /blockbuddy commands.
 '''
 
-[[dependencies.agentlink]]
+[[dependencies.blockbuddy]]
 modId = "forge"
 mandatory = true
 versionRange = "[47,)"
 ordering = "NONE"
 side = "BOTH"
 
-[[dependencies.agentlink]]
+[[dependencies.blockbuddy]]
 modId = "minecraft"
 mandatory = true
 versionRange = "[1.20.1,)"
 ordering = "NONE"
 side = "BOTH"
 
-[[dependencies.agentlink]]
+[[dependencies.blockbuddy]]
 modId = "playerengine"
-mandatory = true
+mandatory = false
 versionRange = "[0,)"
 ordering = "AFTER"
 side = "BOTH"
 
-[[dependencies.agentlink]]
+[[dependencies.blockbuddy]]
 modId = "player2npc"
-mandatory = true
+mandatory = false
 versionRange = "[0,)"
 ordering = "AFTER"
 side = "BOTH"

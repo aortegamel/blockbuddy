@@ -5,7 +5,7 @@ PlayerEngine forge-1.20.1-1.3.0 = Automatone (server-side Baritone fork) +
 AltoClef task chains, packaged as `com.player2.playerengine.*`. Player2NPC is
 the showcase entity mod. Both installed in the instance. The LLM "brain" is
 Player2's CLOUD api (api.player2.game + OAuth) — no localhost impersonation,
-no direct chat-command bypass. => we ship a micro-mod ("agentlink") that
+no direct chat-command bypass. => we ship a micro-mod ("blockbuddy") that
 exposes the controller to our daemon.
 
 ## Wiring facts (decompiled player2npc-forge-1.3.0)
@@ -29,7 +29,7 @@ exposes the controller to our daemon.
   for AutomatoneEntity.class via Cardinal Components — reusing THEIR entity
   type avoids re-registering anything.
 
-## agentlink mod (v1 = thin reflection shim, no new entity)
+## blockbuddy mod (v1 = thin reflection shim, no new entity)
 Forge MDK 1.20.1, depends on both jars (libs/ fileTree). Registers:
 - `/agent spawn <name>`  → build dummy Character via reflection, spawn
   AutomatoneEntity at caller, setOwner(caller)
@@ -40,9 +40,9 @@ Daemon integration: existing Minescript bridge sends these as chat commands —
 zero new protocol. Planner emits pe_* actions mapped to `/agent run ...`.
 
 ## Open risks (smoke test gates)
-1. PlayerEngine+Player2NPC load alongside Reclamation's 165 mods (mixin/CC clash?)
+1. PlayerEngine+Player2NPC load alongside ATM9's mod set (mixin/CC clash?)
 2. PLAYER_JOIN auth check (`AuthenticationManager.checkAuth`) behaviour without
    a Player2 account — expected: async fail, harmless log spam
 3. Automatone pathing performance server-side in a heavy pack
-4. AltoClef chains touching vanilla-only assumptions inside Reclamation
+4. AltoClef chains touching vanilla-only assumptions inside ATM9
    (e.g. `food` command wants vanilla food) — planner works around

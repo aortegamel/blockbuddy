@@ -1,158 +1,99 @@
-"""LLM backend for the planner — Groq (free tier), Anthropic API, or the
-local Claude Code CLI (uses the user's Claude subscription login as a proxy;
-no API key needed).
+"""BlockBuddy brain — OpenAI-compatible chat completions.
 
-Selection order:
-  RECLAMATION_LLM=groq|anthropic|claude-cli    explicit override
-  else: groq if GROQ_API_KEY is set, else anthropic if ANTHROPIC_API_KEY is
-  set, else claude-cli if the `claude` CLI is on PATH.
-
-Groq: GROQ_MODEL, default llama-3.3-70b-versatile.
-Anthropic API: RECLAMATION_PLANNER_MODEL, default claude-opus-4-8.
-claude-cli: RECLAMATION_CLAUDE_MODEL to override the CLI's default model.
+Default points at a local opencode server. Env (.env supported):
+  BLOCKBUDDY_BASE_URL default http://localhost:4096/v1
+  BLOCKBUDDY_API_KEY default empty
+  BLOCKBUDDY_MODEL default opencode-default
+  BLOCKBUDDY_FALLBACK_CHAIN optional comma-separated extra models
 """
 import json
 import os
-import shutil
-import subprocess
 import urllib.request
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_DEFAULT_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-GEMINI_DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash")
-ANTHROPIC_DEFAULT_MODEL = os.environ.get("RECLAMATION_PLANNER_MODEL", "claude-opus-4-8")
+from pathlib import Path
 
 
-KNOWN = ("gemini", "groq", "anthropic", "claude-cli")
+def _load_dotenv():
+    # minimal .env loader (no dependency): KEY=VALUE, skips blanks/#, strips quotes
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv()
+
+DEFAULT_BASE_URL = "http://localhost:4096/v1"
+DEFAULT_MODEL = "opencode-default"
+
+
+def _base_url():
+    return os.environ.get("BLOCKBUDDY_BASE_URL", DEFAULT_BASE_URL).rstrip("/") or DEFAULT_BASE_URL
+
+
+def _model():
+    return os.environ.get("BLOCKBUDDY_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
+
+
+def _api_key():
+    return os.environ.get("BLOCKBUDDY_API_KEY", "")
+
+
+def _fallback_models():
+    raw = os.environ.get("BLOCKBUDDY_FALLBACK_CHAIN", "")
+    return [m for m in (x.strip() for x in raw.split(",")) if m]
+
+
+def _endpoint():
+    base = _base_url()
+    if base.endswith("/chat/completions"):
+        return base
+    return base + "/chat/completions"
 
 
 def provider():
-    """Single provider name, or a comma-separated failover chain
-    (e.g. RECLAMATION_LLM='gemini,groq,claude-cli')."""
-    p = os.environ.get("RECLAMATION_LLM", "").lower().replace(" ", "")
-    if p:
-        return p
-    chain = []
-    if os.environ.get("GEMINI_API_KEY"):
-        chain.append("gemini")
-    if os.environ.get("GROQ_API_KEY"):
-        chain.append("groq")
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        chain.append("anthropic")
-    if shutil.which("claude"):
-        chain.append("claude-cli")
-    if not chain:
-        raise RuntimeError("no LLM configured — set GEMINI_API_KEY (free: aistudio.google.com), "
-                           "GROQ_API_KEY (free: console.groq.com), ANTHROPIC_API_KEY, "
-                           "or install/login the Claude Code CLI")
-    return ",".join(chain)
+    """Primary model name (used in log lines)."""
+    return _model()
 
 
-def _dispatch(p, system, prompt, max_tokens):
-    if p == "groq":
-        return _groq(system, prompt, max_tokens)
-    if p == "gemini":
-        return _gemini(system, prompt, max_tokens)
-    if p == "claude-cli":
-        return _claude_cli(system, prompt)
-    if p == "anthropic":
-        return _anthropic(system, prompt, max_tokens)
-    raise RuntimeError(f"unknown LLM provider: {p!r} (known: {KNOWN})")
+def _chat(model, system, prompt, max_tokens):
+    body = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+    }).encode()
+    headers = {"Content-Type": "application/json"}
+    key = _api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(_endpoint(), data=body, headers=headers)
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.load(resp)
+    return data["choices"][0]["message"]["content"]
 
 
 def complete(system, prompt, max_tokens=4000, chain=None):
-    """Text response for a system+user pair; falls through the provider chain
-    on any failure (rate limit, network, auth) so free tiers stack.
-    `chain` overrides the configured providers (e.g. quality escalation)."""
-    chain = chain or [x for x in provider().split(",") if x]
+    """Text response for a system+user pair; falls through the model chain
+    on any failure. `chain` overrides the configured models."""
+    models = [m for m in (chain or []) if m] or [_model()] + _fallback_models()
     last_error = None
-    for p in chain:
+    for m in models:
         try:
-            return _dispatch(p, system, prompt, max_tokens)
+            return _chat(m, system, prompt, max_tokens)
         except Exception as exc:
             last_error = exc
-            if len(chain) > 1:
-                print(f"[llm] {p} failed ({str(exc)[:120]}) — trying next provider")
+            if len(models) > 1:
+                print(f"[llm] {m} failed ({str(exc)[:120]}) — trying next model")
+    if last_error is None:  # unreachable: models always holds at least the default
+        raise RuntimeError("no models configured")
     raise last_error
-
-
-def _groq(system, prompt, max_tokens):
-    body = json.dumps({
-        "model": GROQ_DEFAULT_MODEL,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-    }).encode()
-    req = urllib.request.Request(
-        GROQ_URL, data=body,
-        headers={
-            "Authorization": f"Bearer {os.environ['GROQ_API_KEY']}",
-            "Content-Type": "application/json",
-            # bare urllib UA gets Cloudflare-blocked (error 1010)
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.load(resp)
-    return data["choices"][0]["message"]["content"]
-
-
-def _gemini(system, prompt, max_tokens):
-    """Google AI Studio free tier (~1500 req/day for Flash) via the
-    OpenAI-compatible endpoint. Key: aistudio.google.com -> Get API key."""
-    body = json.dumps({
-        "model": GEMINI_DEFAULT_MODEL,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-    }).encode()
-    req = urllib.request.Request(
-        GEMINI_URL, data=body,
-        headers={
-            "Authorization": f"Bearer {os.environ['GEMINI_API_KEY']}",
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.load(resp)
-    return data["choices"][0]["message"]["content"]
-
-
-def _claude_cli(system, prompt):
-    """Plan via the locally logged-in Claude Code CLI — the user's subscription
-    acts as the API proxy. One-shot print mode, no tools, JSON-only output."""
-    exe = shutil.which("claude")
-    if not exe:
-        raise RuntimeError("claude CLI not found on PATH")
-    cmd = [exe, "-p", "--output-format", "text", "--max-turns", "1"]
-    model = os.environ.get("RECLAMATION_CLAUDE_MODEL")
-    if model:
-        cmd += ["--model", model]
-    full_prompt = f"{system}\n\n---\n\n{prompt}\n\nRespond with the JSON object only."
-    result = subprocess.run(cmd, input=full_prompt, capture_output=True,
-                            text=True, encoding="utf-8", timeout=600)
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip() or (result.stdout or "").strip() or "(no output)"
-        raise RuntimeError(f"claude CLI failed ({result.returncode}): {detail[:400]}")
-    return result.stdout
-
-
-def _anthropic(system, prompt, max_tokens):
-    import anthropic
-    client = anthropic.Anthropic()
-    resp = client.messages.create(
-        model=ANTHROPIC_DEFAULT_MODEL,
-        max_tokens=max_tokens,
-        thinking={"type": "adaptive"},
-        system=system,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return next(b.text for b in resp.content if b.type == "text")

@@ -1,12 +1,12 @@
 # In-game bridge — design
 
 The planner (agent/planner.py) emits steps in a fixed action vocabulary.
-This layer executes them inside the running Reclamation client.
+This layer executes them inside the running ATM9 client.
 
 ## Architecture (chosen: Option A first, B when GUIs are needed)
 
 ```
-┌────────────────────── Minecraft 1.20.1 Forge (Reclamation) ──────────────────────┐
+┌────────────────────── Minecraft 1.20.1 Forge (ATM9) ──────────────────────────────┐
 │  Baritone (Forge build)          ← movement / mining / building                  │
 │  Minescript 4.x (Forge)          ← Python inside the client                      │
 │     └─ bridge script: state dump + action executor, TCP/stdio to agent daemon    │
@@ -44,8 +44,8 @@ inventory delta check). On failure: retry once, then replan with the failure
 in state, then `manual` escalation (chat message to the player).
 
 ## Install checklist (M1)
-Instance: set `AGENT_MC_DIR` to your instance minecraft/ folder
-(MC 1.20.1, Forge 47.4.0 — matches quest_graph.json pack version 2.3.2)
+Instance: set `BLOCKBUDDY_MC_DIR` to your instance minecraft/ folder
+(MC 1.20.1, Forge 47.4.0 — ATM9)
 
 1. [x] Pack installed (Prism Launcher)
 2. [x] `minecraft/mods/baritone-standalone-forge-1.10.3.jar` (v1.10.3 = the 1.20/1.20.1 line;

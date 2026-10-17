@@ -259,7 +259,7 @@ def main():
         sock.settimeout(None)
     except OSError as exc:
         minescript.echo(f"[bridge] FAILED to connect ({exc}) — start the daemon first:")
-        minescript.echo("[bridge]   python D:/reclamation-agent/agent/daemon.py")
+        minescript.echo("[bridge]   python agent/daemon.py")
         return
     minescript.echo("[bridge] connected — agent has control. \\killjob to stop.")
     buf = b""

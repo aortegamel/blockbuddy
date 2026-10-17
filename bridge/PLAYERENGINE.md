@@ -1,48 +1,29 @@
-# PlayerEngine integration — design (from decompiled forge 1.3.0 jars)
+# Body — built-in FakePlayer (replaces the old PlayerEngine design)
 
-## Verdict recap
-PlayerEngine forge-1.20.1-1.3.0 = Automatone (server-side Baritone fork) +
-AltoClef task chains, packaged as `com.player2.playerengine.*`. Player2NPC is
-the showcase entity mod. Both installed in the instance. The LLM "brain" is
-Player2's CLOUD api (api.player2.game + OAuth) — no localhost impersonation,
-no direct chat-command bypass. => we ship a micro-mod ("blockbuddy") that
-exposes the controller to our daemon.
+The `blockbuddy` mod spawns its own server-side FakePlayer-like entity. The
+entity carries its own inventory and acts through vanilla mechanics only:
 
-## Wiring facts (decompiled player2npc-forge-1.3.0)
-- Entity: `com.goodbird.player2npc.companion.AutomatoneEntity extends LivingEntity`
-  - type registered as `player2npc:aicompanion` (`Player2NPC.AUTOMATONE`)
-  - `init(Player owner)`: creates LivingEntityInteractionManager/Inventory/Hunger;
-    controller ONLY created when `character != null`:
-    `new PlayerEngineController(IBaritone.KEY.get(this), character, PLAYER2_GAME_ID)`
-  - ctor `AutomatoneEntity(Level, Character, Player owner)` — Character is a
-    simple record (name, shortName, greetingInfo, description, skinURL, ...)
-    → construct a dummy one locally, NO Player2 account needed
-  - `ConversationManager.sendGreeting(...)` hits the cloud — skip/ignore failure
-- Command execution: `controller.getCommandExecutor().execute(String line)`
-  (CommandExecutor in playerengine jar; prefix "@", commands: get, goto, follow,
-  attack, farm, fish, deposit, equip, food, inventory, locate_structure, stash,
-  status, stop, idle...)
-- `get` resolves via hardcoded vanilla TaskCatalogue (159 items) → modded items
-  NOT supported by `get`; modded chains stay in OUR planner, decomposed to
-  primitives (mine/goto/attack/deposit + vanilla get).
-- Components: Player2NPCComponents registers IBaritone/ISelectionManager/etc.
-  for AutomatoneEntity.class via Cardinal Components — reusing THEIR entity
-  type avoids re-registering anything.
+- Movement: vanilla pathfinding (`goto` x y z, `follow`, `stop`).
+- Mining: nearest matching blocks broken with vanilla destroy logic, drops
+  picked up into the body's own inventory (`mine <block> [n]`, modded ids
+  included).
+- Crafting: the existing recursive RecipeManager logic (kubejs/datapack
+  recipes work, intermediates resolved automatically).
+- Transfers: `give` hands loot to the player (FTB quest tasks check the
+  player inventory); `take`/`store` move items between the body and nearby
+  chests or machine slots (`IItemHandler`); `spawn` creates the body with no
+  third-party account, character, or controller classes.
+- Commands: `/blockbuddy <subcommand>` with `/agent` as a short alias.
 
-## blockbuddy mod (v1 = thin reflection shim, no new entity)
-Forge MDK 1.20.1, depends on both jars (libs/ fileTree). Registers:
-- `/agent spawn <name>`  → build dummy Character via reflection, spawn
-  AutomatoneEntity at caller, setOwner(caller)
-- `/agent run <line...>` → nearest owned AutomatoneEntity →
-  controller (reflection field) → getCommandExecutor().execute(line)
-- `/agent status` / `/agent stop` → task list / executor stop
-Daemon integration: existing Minescript bridge sends these as chat commands —
-zero new protocol. Planner emits pe_* actions mapped to `/agent run ...`.
+The planner daemon issues these through the Minescript chat bridge — no new
+protocol. The old `/agent run <cmd>` free-form line is gone; movement goes
+through `goto`/`follow`/`stop` and mining through `mine`.
 
-## Open risks (smoke test gates)
-1. PlayerEngine+Player2NPC load alongside ATM9's mod set (mixin/CC clash?)
-2. PLAYER_JOIN auth check (`AuthenticationManager.checkAuth`) behaviour without
-   a Player2 account — expected: async fail, harmless log spam
-3. Automatone pathing performance server-side in a heavy pack
-4. AltoClef chains touching vanilla-only assumptions inside ATM9
-   (e.g. `food` command wants vanilla food) — planner works around
+## Legacy note (avoided, not used — history only)
+
+Earlier revisions drove a PlayerEngine companion entity (Automatone
+pathfinding plus AltoClef task chains, via Player2NPC). That design is
+replaced. PlayerEngine / Player2NPC (LGPL-3.0), Automatone, and AltoClef are
+NOT dependencies: nothing in `build.gradle` references them, no jars ship in
+`libs/`, and no source imports their packages. They appear in this file only
+as history so nobody re-adds them.

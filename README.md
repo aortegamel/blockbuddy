@@ -2,9 +2,9 @@
 
 **An autonomous AI player for _modded_ Minecraft.**
 
-BlockBuddy reads your modpack's quest book, plans with an LLM, and sends a
-server-side AI companion to do the work — mining, crafting (modded recipes
-included), fighting, hauling — while you keep playing. It is built for
+BlockBuddy reads your modpack's quest book, plans with an LLM, and spawns a
+built-in server-side FakePlayer body to do the work — mining, crafting (modded
+recipes included), fighting, hauling — while you keep playing. It is built for
 **modpacks**, not just vanilla.
 
 > `/blockbuddy spawn Bob` → the planner reads the pack's FTB quests → Bob walks off,
@@ -30,7 +30,7 @@ Every well-known Minecraft AI project is **vanilla-only**:
 | Project | Why it can't play your modpack |
 |---|---|
 | Voyager, Mindcraft, mineflayer bots | Speak the vanilla protocol — can't even join a Forge server |
-| Baritone / AltoClef | Brilliant executors, but vanilla item catalogues and Fabric-only builds |
+| Baritone-style executors | Brilliant pathing/mining, but vanilla item catalogues and Fabric-only builds |
 | STEVE-1, JARVIS-VLA, pixel agents | Research models: vanilla training data, need an RTX 3090, ~5 FPS |
 | AI-Player, ChatClef companions | Fabric-only, vanilla capabilities, cloud-locked brains |
 
@@ -48,19 +48,18 @@ live. BlockBuddy targets exactly that gap.
   `POST {base}/chat/completions` works. The prompt carries the world facts
   and action vocabulary, so the model plans rather than reasons from scratch
   (`BLOCKBUDDY_MODEL=opencode-default`).
-- **Acts through a real body.** A [PlayerEngine](https://www.curseforge.com/minecraft/mc-mods/playerengine)
-  companion entity — server-side, pathfinding by Automatone (Baritone fork),
-  AltoClef task chains — plus our `blockbuddy` micro-mod that exposes it to the
-  planner:
+- **Acts through a built-in body.** The `blockbuddy` mod spawns a server-side
+  FakePlayer-like entity with its own inventory — no third-party body mod
+  needed. Movement uses vanilla pathfinding; mining breaks blocks with vanilla
+  destroy logic and picks up the drops:
   - `/blockbuddy mine <block> [n]` — mine **any** registered block, modded ids included
+  - `/blockbuddy goto <x> <y> <z>` / `follow` / `stop` — vanilla pathfinding movement
   - `/blockbuddy craft <item> [n]` — craft **any** recipe from the game's RecipeManager
     (kubejs/datapack recipes work), resolving intermediate ingredients
     **recursively** (log → scrap → planks happens automatically)
   - `/blockbuddy take|store <item> [n]` — move items between the agent and nearby
     chests or machine slots (any `IItemHandler`)
   - `/blockbuddy give <item> [n]` — hand the loot to the player (quests check *your* inventory)
-  - `/blockbuddy run <cmd>` — the whole AltoClef command set: `follow`, `goto`,
-    `attack`, `farm`, `deposit`, `equip`, ...
   - (`/agent` works as a short alias for `/blockbuddy`.)
 - **Verifies everything.** Inventory deltas, quest-save reads, chat-response
   checks. Failed steps trigger replanning; repeatedly failing quests get set
@@ -72,7 +71,7 @@ live. BlockBuddy targets exactly that gap.
   quest rewards), it asks for in chat and waits for your `.done`.
 
 Live-tested on Forge 1.20.1 with a 500+ quest FTB pack — the
-companion autonomously mined modded blocks, crafted through modded recipe
+built-in body autonomously mined modded blocks, crafted through modded recipe
 chains, and progressed real quests.
 
 ## Architecture
@@ -89,9 +88,8 @@ chains, and progressed real quests.
 │    ▲                                                                 │
 │ ┌──┴───────────────── Minecraft (Forge) ──────────────────────────┐  │
 │ │ Minescript bridge  ── chat/state/inventory I/O                  │  │
-│ │ blockbuddy mod     ── /blockbuddy commands → PlayerEngine ctrl  │  │
-│ │ PlayerEngine       ── companion entity: Automatone pathfinding, │  │
-│ │                       AltoClef task chains, own inventory       │  │
+│ │ blockbuddy mod ── /blockbuddy commands → built-in FakePlayer     │  │
+│ │   body: own inventory, vanilla pathfinding + destroyBlock mining │  │
 │ └──────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -109,8 +107,7 @@ build the mod), and a brain (local opencode server by default — see `.env` bel
 git clone <repo-url> && cd blockbuddy
 
 # 1. mods into your instance's mods/ folder:
-#    - PlayerEngine + Player2NPC (CurseForge, Forge 1.20.1)
-#    - Baritone (optional, for player-body fallback) + Minescript
+#    - Minescript (Forge 1.20.1) for the chat/state bridge
 #    - blockbuddy: cd blockbuddy-mod && ./gradlew build   → build/libs/*.jar
 
 # 2. point the tools at your instance and install the bridge
@@ -124,8 +121,8 @@ python tools/build_quest_graph.py
 python agent/daemon.py
 ```
 
-The daemon spawns a companion if none exists and starts working the quest
-frontier. Type `#stop` / `/blockbuddy stop` in chat any time to halt it.
+The daemon spawns the built-in body if none exists and starts working the quest
+frontier. Type `/blockbuddy stop` in chat any time to halt it.
 
 ## Brain setup (`.env`)
 
@@ -160,7 +157,7 @@ the gateway client is a stub. Leave them empty to run without wiki context.
 Early alpha, moving fast. Honest state of the world:
 
 - [x] Quest graph extraction (FTB Quests), frontier planning, LLM planner
-- [x] Companion body: mine (modded), craft (modded, recursive), take/store, give
+- [x] Built-in FakePlayer body: mine (modded), craft (modded, recursive), take/store, give
 - [x] Multiplayer mode (progress ledger + no-OP fallbacks)
 - [x] Death detection, danger pause, verified human-assist steps
 - [ ] Machine automation (insert/extract works; machine recipes next)
@@ -171,16 +168,16 @@ Early alpha, moving fast. Honest state of the world:
 ## Credits
 
 BlockBuddy stands on excellent shoulders:
-[PlayerEngine](https://github.com/Goodbird-git/PlayerEngine) by Goodbird ·
-[Automatone](https://github.com/Ladysnake/Automatone) by Ladysnake ·
-[AltoClef](https://github.com/gaucho-matrero/altoclef) ·
-[Baritone](https://github.com/cabaletta/baritone) ·
 [Minescript](https://minescript.net) ·
 [FTB Quests](https://github.com/FTBTeam/FTB-Quests)
+
+Avoided by design (replaced, not used): PlayerEngine / Player2NPC (LGPL-3.0),
+Automatone, AltoClef, and Baritone stay out of the dependency tree so the repo
+and the built jar stay MIT-only with zero downloaded jars beyond the Forge
+toolchain.
 
 ## License
 
 MIT for everything in this repo — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-PlayerEngine/Player2NPC (LGPL-3.0) and other client mods are **runtime-only**:
-they are **not** bundled, only downloaded separately into your instance's
-`mods/` folder.
+No LGPL body mods are required or bundled; the only runtime mods are our own
+`blockbuddy` jar plus Minescript for the chat/state bridge.

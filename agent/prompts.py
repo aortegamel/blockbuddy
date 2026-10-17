@@ -3,7 +3,7 @@ with the in-game actuators — every step the planner emits must use one of
 these actions, so plans stay executable.
 
 Two body modes (BLOCKBUDDY_BODY):
-  companion — a PlayerEngine entity does the work while the player is free
+  companion — a built-in FakePlayer-like companion entity does the work while the player is free
   player    — the AI drives the PLAYER's own body (client-side only: works on
               any server with zero server-side mods)
 """
@@ -18,30 +18,28 @@ state, and must plan concrete actions.
 """
 
 _COMPANION_BODY = """\
-You control TWO bodies: an AI COMPANION entity (PlayerEngine — preferred for
-all gathering, mining, travel, combat; it works while the player is free) and
+You control TWO bodies: a built-in COMPANION entity (preferred for
+all gathering, mining, and hauling; it works while the player is free) and
 the PLAYER (fallback + crafting with human help).
 
 COMPANION actions (STRONGLY PREFERRED for resource work):
 - {"action": "agent_mine", "block": "kubejs:dead_log", "count": 16}   # mines ANY block incl. modded ids, collects drops into the AGENT's inventory
 - {"action": "agent_craft", "item": "kubejs:flimsy_planks", "count": 8} # crafts ANY recipe incl. modded/kubejs — ingredients must ALREADY be in the AGENT's inventory (agent_mine/agent_take them first)
-- {"action": "agent_get", "item": "stick", "count": 4}                # full gather+craft chain — VANILLA items only (no modded ids)
 - {"action": "agent_take", "item": "copper_ingot", "count": 8}        # pull from chests/machine slots within 12 blocks of the agent
 - {"action": "agent_store", "item": "cobblestone", "count": 64}       # store into the nearest chest
 - {"action": "agent_give", "item": "dead_log", "count": 16}           # transfer agent -> player. CRITICAL: quest item tasks check the PLAYER's inventory, so always agent_give after gathering/crafting!
-- {"action": "agent_run", "cmd": "follow"}                            # raw commands: follow | goto <x> <y> <z> | attack <mob> | pickup_drops | deposit | equip <item> | stop
+- {"action": "agent_run", "cmd": "follow"}                            # raw steering: follow | goto <x> <y> <z> | stop
 Typical quest flow: agent_mine ingredients -> agent_craft item -> agent_give to player.
 agent_mine SEARCHES for the block itself: it explores the world until it finds
 one (surface ruins included). NEVER escalate "location unknown" to "manual" —
 plan agent_mine with a generous "timeout" (e.g. 900 for rare blocks like
 minecraft:oxidized_cut_copper); if it truly can't find any, the step fails and
 you replan with better information.
-NEVER use the player-body actions goto/goto_block/mine for resource work (they
-are AUTO-REMAPPED to agent_mine anyway). Player-body movement is a last resort
+NEVER use the player-body actions goto/goto_block/mine for resource work.
+Player-body movement is a last resort
 for things only the player can do (opening machine GUIs, clicking the book).
-Mob-drop items (string, bones...): {"action":"agent_run","cmd":"attack <mob>"}
-then {"action":"agent_run","cmd":"pickup_drops"} (collects ALL nearby drops
-into the agent), then agent_give the item to the player.
+Mob-drop items (string, bones...): use player-body kill + collect, or escalate
+to manual — the companion has no combat commands.
 """
 
 _PLAYER_BODY = """\

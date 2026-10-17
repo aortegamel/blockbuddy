@@ -235,8 +235,8 @@ def main():
                     "data/base_mp.json with --mp, data/base_sp.json otherwise)")
     ap.add_argument("--body", default=os.environ.get("BLOCKBUDDY_BODY", "companion"),
                     choices=["companion", "player"],
-                    help="companion = PlayerEngine entity does the work (needs server-side "
-                         "mods); player = the AI drives YOUR character (client-side only, "
+                    help="companion = built-in blockbuddy entity does the work; "
+                         "player = the AI drives YOUR character (client-side only, "
                          "works on any server)")
     ap.add_argument("--max-cycles", type=int, default=10)
     args = ap.parse_args()
@@ -286,14 +286,11 @@ def main():
     bridge.call("echo", text=f"[blockbuddy] online ({args.body} mode) — starting work")
 
     if args.body == "companion":
-        # make sure a PlayerEngine companion exists in THIS world
+        # make sure a built-in companion exists in THIS world
         if actions.agent_state(timeout=6) is None:
             log("no companion in this world — spawning Bob")
-            bridge.call("chat", text="/agent spawn Bob")
+            bridge.call("chat", text="/blockbuddy spawn Bob")
             time.sleep(3)
-        # silence PlayerEngine's Player2 cloud bridge (no account -> HTTP 500 spam);
-        # our planner drives the controller directly, so nothing is lost
-        bridge.call("chat", text="/agent run chatclef off")
 
     if args.plan:
         plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))

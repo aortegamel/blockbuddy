@@ -2,8 +2,8 @@ BlockBuddy — third-party notices
 
 BlockBuddy itself is MIT licensed (see LICENSE).
 The following projects are NOT bundled in this repository. They are listed
-here for attribution because BlockBuddy builds on their ideas, reads their
-data formats at runtime, or expects them as separately downloaded mods.
+here for attribution because BlockBuddy reads their
+data formats at runtime or expects them as separately downloaded mods.
 No wiki text is stored in this repository.
 - Prior MIT-licensed autonomous modded-Minecraft agent work
   (upstream inspiration, unbundled — no code vendored here).
@@ -15,7 +15,10 @@ No wiki text is stored in this repository.
 - MCP SDK — Model Context Protocol SDK (MIT)
 - nbtlib (MIT)
 
-LGPL licensed (download-only — NEVER bundled with this repo):
-- PlayerEngine (LGPL-3.0) — download from its CurseForge page into your
-  instance's mods/ folder.
-- Player2NPC (LGPL-3.0) — same: download separately, not shipped here.
+Avoided by design (replaced, NOT used — history only, never bundled,
+never downloaded as a dependency):
+- PlayerEngine (LGPL-3.0) and Player2NPC (LGPL-3.0) — an earlier body design
+  used them; the built-in FakePlayer body replaces them. Do not add them to
+  the instance mods/ folder for BlockBuddy and do not reference them from
+  build files or source.
+- Automatone and AltoClef fall under the same replaced-design note.

@@ -1,12 +1,8 @@
 package dev.blockbuddy;
 
-import com.goodbird.player2npc.companion.AutomatoneEntity;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
-import com.player2.playerengine.player2api.Character;
-import com.player2.playerengine.tasks.resources.MineAndCollectTask;
-import com.player2.playerengine.util.MiningRequirement;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
@@ -33,10 +29,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * /blockbuddy spawn [name]  — summon a PlayerEngine agent next to the caller
- * /blockbuddy run <cmdline> — feed an AltoClef command to the nearest agent
- *                              (get/goto/follow/attack/farm/deposit/equip/...)
- * /blockbuddy mine <block> [n] — MineAndCollectTask on ANY registered block,
+ * /blockbuddy spawn [name]  — summon a built-in companion next to the caller
+ * /blockbuddy run <goto x y z|follow|stop> — steer the nearest companion
+ *                              (vanilla pathfinding, no external pathing mod)
+ * /blockbuddy mine <block> [n] — break nearest matching blocks in radius,
  *                              including modded ids (kubejs:dead_log 16)
  * /blockbuddy state         — one-line JSON status (pos/health/inventory),
  *                              echoed to chat for the daemon's chat_log reader
@@ -45,7 +41,8 @@ import java.util.Map;
  * (/agent stays as a short alias.)
  *
  * The external planner daemon issues these through the Minescript chat bridge,
- * so the LLM brain stays outside the game while PlayerEngine provides the body.
+ * so the LLM brain stays outside the game while the built-in FakePlayer-like
+ * body (BlockBuddyEntity) does the work.
  */
 public final class BlockBuddyCommand {
 
@@ -91,9 +88,9 @@ public final class BlockBuddyCommand {
         dispatcher.register(Commands.literal("agent").redirect(node));
     }
 
-    private static AutomatoneEntity nearest(ServerPlayer player) {
-        List<AutomatoneEntity> agents = player.serverLevel().getEntitiesOfClass(
-                AutomatoneEntity.class, player.getBoundingBox().inflate(96.0));
+    private static BlockBuddyEntity nearest(ServerPlayer player) {
+        List<BlockBuddyEntity> agents = player.serverLevel().getEntitiesOfClass(
+                BlockBuddyEntity.class, player.getBoundingBox().inflate(96.0));
         return agents.stream()
                 .min(Comparator.comparingDouble(e -> e.distanceToSqr(player)))
                 .orElse(null);
@@ -101,9 +98,9 @@ public final class BlockBuddyCommand {
 
     private static int mine(CommandSourceStack src, String spec) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        AutomatoneEntity agent = nearest(player);
-        if (agent == null || agent.controller == null) {
-            src.sendFailure(Component.literal("[blockbuddy] no controllable agent nearby"));
+        BlockBuddyEntity agent = nearest(player);
+        if (agent == null) {
+            src.sendFailure(Component.literal("[blockbuddy] no agent nearby — /blockbuddy spawn first"));
             return 0;
         }
         String[] parts = spec.trim().split("\\s+");
@@ -114,20 +111,17 @@ public final class BlockBuddyCommand {
             src.sendFailure(Component.literal("[blockbuddy] unknown block: " + parts[0]));
             return 0;
         }
-        agent.controller.runUserTask(new MineAndCollectTask(
-                block.asItem(), count, new Block[]{block},
-                MiningRequirement.getMinimumRequirementForBlock(block)));
+        agent.startMining(block, count);
         src.sendSuccess(() -> Component.literal("[blockbuddy] mining " + count + "x " + id), false);
         return 1;
     }
 
     /** Direct inventory transfer agent -> caller. Requires the agent within 8
-     *  blocks (bring it with `run follow` first) — AltoClef's GiveItemToPlayerTask
-     *  throws items by physics and loses most of the stack. */
+     *  blocks (bring it with `run follow` first). */
     private static int give(CommandSourceStack src, String spec) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        AutomatoneEntity agent = nearest(player);
-        if (agent == null || agent.getLivingInventory() == null) {
+        BlockBuddyEntity agent = nearest(player);
+        if (agent == null) {
             src.sendFailure(Component.literal("[blockbuddy] no agent nearby"));
             return 0;
         }
@@ -139,7 +133,7 @@ public final class BlockBuddyCommand {
         String itemName = parts[0].contains(":") ? parts[0].split(":", 2)[1] : parts[0];
         int count = parts.length > 1 ? Integer.parseInt(parts[1]) : 64;
         int moved = 0;
-        for (ItemStack stack : agent.getLivingInventory().main) {
+        for (ItemStack stack : agent.inv) {
             if (moved >= count || stack.isEmpty()) continue;
             ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
             if (key == null || !key.getPath().equals(itemName)) continue;
@@ -171,48 +165,30 @@ public final class BlockBuddyCommand {
         return null;
     }
 
-    private static int insertIntoAgent(AutomatoneEntity agent, ItemStack stack) {
-        NonNullList<ItemStack> main = agent.getLivingInventory().main;
-        int remaining = stack.getCount();
-        for (ItemStack slot : main) {
-            if (remaining == 0) break;
-            if (!slot.isEmpty() && ItemStack.isSameItemSameTags(slot, stack)
-                    && slot.getCount() < slot.getMaxStackSize()) {
-                int moved = Math.min(remaining, slot.getMaxStackSize() - slot.getCount());
-                slot.grow(moved);
-                remaining -= moved;
-            }
-        }
-        for (int i = 0; i < main.size() && remaining > 0; i++) {
-            if (main.get(i).isEmpty()) {
-                int moved = Math.min(remaining, stack.getMaxStackSize());
-                main.set(i, stack.copyWithCount(moved));
-                remaining -= moved;
-            }
-        }
-        return stack.getCount() - remaining;
+    private static int insertIntoAgent(BlockBuddyEntity agent, ItemStack stack) {
+        return agent.insertStack(stack);
     }
 
-    private static int countIn(NonNullList<ItemStack> main, Item item) {
+    private static int countIn(NonNullList<ItemStack> inv, Item item) {
         int total = 0;
-        for (ItemStack stack : main) {
+        for (ItemStack stack : inv) {
             if (!stack.isEmpty() && stack.getItem() == item) total += stack.getCount();
         }
         return total;
     }
 
     /** Greedy consume+produce for `crafts` iterations of one recipe. */
-    private static boolean tryCraft(AutomatoneEntity agent, CraftingRecipe recipe,
+    private static boolean tryCraft(BlockBuddyEntity agent, CraftingRecipe recipe,
                                     ItemStack result, int crafts) {
-        NonNullList<ItemStack> main = agent.getLivingInventory().main;
-        int[] counts = new int[main.size()];
-        for (int i = 0; i < main.size(); i++) counts[i] = main.get(i).getCount();
+        NonNullList<ItemStack> inv = agent.inv;
+        int[] counts = new int[inv.size()];
+        for (int i = 0; i < inv.size(); i++) counts[i] = inv.get(i).getCount();
         for (int c = 0; c < crafts; c++) {
             for (Ingredient ing : recipe.getIngredients()) {
                 if (ing.isEmpty()) continue;
                 boolean matched = false;
-                for (int i = 0; i < main.size(); i++) {
-                    if (counts[i] > 0 && ing.test(main.get(i))) {
+                for (int i = 0; i < inv.size(); i++) {
+                    if (counts[i] > 0 && ing.test(inv.get(i))) {
                         counts[i]--;
                         matched = true;
                         break;
@@ -221,9 +197,9 @@ public final class BlockBuddyCommand {
                 if (!matched) return false;
             }
         }
-        for (int i = 0; i < main.size(); i++) {
-            int consumed = main.get(i).getCount() - counts[i];
-            if (consumed > 0) main.get(i).shrink(consumed);
+        for (int i = 0; i < inv.size(); i++) {
+            int consumed = inv.get(i).getCount() - counts[i];
+            if (consumed > 0) inv.get(i).shrink(consumed);
         }
         for (int c = 0; c < crafts; c++) {
             insertIntoAgent(agent, result.copy());
@@ -234,17 +210,17 @@ public final class BlockBuddyCommand {
     /** Craft target from the agent's inventory; when an ingredient is missing
      *  but itself craftable, craft it first (modpack chains like
      *  dead_log -> scrap_wood -> flimsy_planks resolve automatically). */
-    private static boolean craftRecursive(ServerPlayer player, AutomatoneEntity agent,
+    private static boolean craftRecursive(ServerPlayer player, BlockBuddyEntity agent,
                                           Item target, int wanted, int depth) {
-        NonNullList<ItemStack> main = agent.getLivingInventory().main;
-        if (countIn(main, target) >= wanted) return true;
+        NonNullList<ItemStack> inv = agent.inv;
+        if (countIn(inv, target) >= wanted) return true;
         if (depth <= 0) return false;
         List<CraftingRecipe> recipes = player.serverLevel().getRecipeManager()
                 .getAllRecipesFor(RecipeType.CRAFTING);
         for (CraftingRecipe recipe : recipes) {
             ItemStack result = recipe.getResultItem(player.serverLevel().registryAccess());
             if (result.isEmpty() || result.getItem() != target) continue;
-            int missing = wanted - countIn(main, target);
+            int missing = wanted - countIn(inv, target);
             int crafts = (missing + result.getCount() - 1) / result.getCount();
             if (tryCraft(agent, recipe, result, crafts)) return true;
             // gather per-ingredient needs (representative item per ingredient slot)
@@ -256,7 +232,7 @@ public final class BlockBuddyCommand {
             boolean progressed = false;
             for (Map.Entry<Item, Integer> need : needs.entrySet()) {
                 if (need.getKey() == target) { progressed = false; break; }
-                if (countIn(main, need.getKey()) < need.getValue()) {
+                if (countIn(inv, need.getKey()) < need.getValue()) {
                     progressed |= craftRecursive(player, agent, need.getKey(),
                             need.getValue(), depth - 1);
                 }
@@ -270,9 +246,9 @@ public final class BlockBuddyCommand {
      *  own inventory, server-side, resolving intermediate ingredients recursively. */
     private static int craft(CommandSourceStack src, String spec) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        AutomatoneEntity agent = nearest(player);
-        if (agent == null || agent.getLivingInventory() == null || agent.controller == null) {
-            src.sendFailure(Component.literal("[blockbuddy] no controllable agent nearby"));
+        BlockBuddyEntity agent = nearest(player);
+        if (agent == null) {
+            src.sendFailure(Component.literal("[blockbuddy] no agent nearby"));
             return 0;
         }
         String[] parts = spec.trim().split("\\s+");
@@ -283,7 +259,7 @@ public final class BlockBuddyCommand {
             return 0;
         }
         boolean ok = craftRecursive(player, agent, target, wanted, 4);
-        int have = countIn(agent.getLivingInventory().main, target);
+        int have = countIn(agent.inv, target);
         final ResourceLocation rid = ForgeRegistries.ITEMS.getKey(target);
         if (ok) {
             src.sendSuccess(() -> Component.literal(
@@ -300,8 +276,8 @@ public final class BlockBuddyCommand {
     private static int container(CommandSourceStack src, String spec, boolean take)
             throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        AutomatoneEntity agent = nearest(player);
-        if (agent == null || agent.getLivingInventory() == null) {
+        BlockBuddyEntity agent = nearest(player);
+        if (agent == null) {
             src.sendFailure(Component.literal("[blockbuddy] no agent nearby"));
             return 0;
         }
@@ -328,8 +304,8 @@ public final class BlockBuddyCommand {
                     moved += insertIntoAgent(agent, pulled);
                 }
             } else {
-                NonNullList<ItemStack> main = agent.getLivingInventory().main;
-                for (ItemStack stack : main) {
+                NonNullList<ItemStack> inv = agent.inv;
+                for (ItemStack stack : inv) {
                     if (moved >= count || stack.isEmpty()) continue;
                     ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
                     if (key == null || !key.getPath().equals(itemName)) continue;
@@ -351,19 +327,17 @@ public final class BlockBuddyCommand {
 
     private static int state(CommandSourceStack src) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        AutomatoneEntity agent = nearest(player);
+        BlockBuddyEntity agent = nearest(player);
         if (agent == null) {
             src.sendSuccess(() -> Component.literal("[agentstate] {\"agent\": null}"), false);
             return 0;
         }
         Map<String, Integer> inv = new HashMap<>();
-        if (agent.getLivingInventory() != null) {
-            for (ItemStack stack : agent.getLivingInventory().main) {
-                if (!stack.isEmpty()) {
-                    ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
-                    String name = key == null ? "unknown" : key.getPath();
-                    inv.merge(name, stack.getCount(), Integer::sum);
-                }
+        for (ItemStack stack : agent.inv) {
+            if (!stack.isEmpty()) {
+                ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
+                String name = key == null ? "unknown" : key.getPath();
+                inv.merge(name, stack.getCount(), Integer::sum);
             }
         }
         StringBuilder sb = new StringBuilder("[agentstate] {\"pos\":[")
@@ -385,30 +359,53 @@ public final class BlockBuddyCommand {
 
     private static int spawn(CommandSourceStack src, String name) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        // Local dummy character — no Player2 account involved. The cloud
-        // greeting inside init() fails silently without auth; harmless.
-        Character character = new Character(
-                "blockbuddy-" + name.toLowerCase(), name, name,
-                "", "BlockBuddy agent (external planner)", "", new String[0]);
-        AutomatoneEntity agent = new AutomatoneEntity(player.level(), character, player);
+        BlockBuddyEntity agent = new BlockBuddyEntity(
+                BlockBuddy.BUDDY.get(), player.serverLevel());
+        agent.setBuddyName(name);
+        agent.setCustomName(Component.literal(name));
+        agent.setCustomNameVisible(true);
         agent.setPos(player.getX() + 1.0, player.getY(), player.getZ());
+        agent.setPersistenceRequired();
         player.serverLevel().addFreshEntity(agent);
         src.sendSuccess(() -> Component.literal("[blockbuddy] spawned agent '" + name + "'"), false);
         return 1;
     }
 
+    /** Built-in steering set: goto (x y z, or bare = look-at walk), follow, stop. */
     private static int run(CommandSourceStack src, String cmd) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        AutomatoneEntity agent = nearest(player);
+        BlockBuddyEntity agent = nearest(player);
         if (agent == null) {
             src.sendFailure(Component.literal("[blockbuddy] no agent within 64 blocks — /blockbuddy spawn first"));
             return 0;
         }
-        if (agent.controller == null) {
-            src.sendFailure(Component.literal("[blockbuddy] agent has no controller (spawned without character?)"));
+        String[] parts = cmd.trim().split("\\s+");
+        if (parts.length == 0 || parts[0].isEmpty()) {
+            src.sendFailure(Component.literal("[blockbuddy] usage: goto <x> <y> <z> | follow | stop"));
             return 0;
         }
-        agent.controller.getCommandExecutor().executeWithPrefix(cmd);
+        switch (parts[0]) {
+            case "stop" -> agent.stopAll();
+            case "follow" -> agent.setFollow(player);
+            case "goto" -> {
+                if (parts.length >= 4) {
+                    try {
+                        agent.setGoto(new BlockPos(Integer.parseInt(parts[1]),
+                                Integer.parseInt(parts[2]), Integer.parseInt(parts[3])));
+                    } catch (NumberFormatException e) {
+                        src.sendFailure(Component.literal("[blockbuddy] bad coords: " + cmd));
+                        return 0;
+                    }
+                } else {
+                    agent.walkOwnerLook(player);
+                }
+            }
+            default -> {
+                src.sendFailure(Component.literal("[blockbuddy] unknown run command '"
+                        + parts[0] + "' (goto/follow/stop)"));
+                return 0;
+            }
+        }
         src.sendSuccess(() -> Component.literal("[blockbuddy] -> " + cmd), false);
         return 1;
     }

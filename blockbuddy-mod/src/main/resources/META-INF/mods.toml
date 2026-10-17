@@ -7,7 +7,7 @@ modId = "blockbuddy"
 version = "0.4.1"
 displayName = "BlockBuddy"
 description = '''
-Exposes PlayerEngine agents to an external planner via /blockbuddy commands.
+Exposes a built-in FakePlayer body to an external planner via /blockbuddy commands.
 '''
 
 [[dependencies.blockbuddy]]
@@ -22,18 +22,4 @@ modId = "minecraft"
 mandatory = true
 versionRange = "[1.20.1,)"
 ordering = "NONE"
-side = "BOTH"
-
-[[dependencies.blockbuddy]]
-modId = "playerengine"
-mandatory = false
-versionRange = "[0,)"
-ordering = "AFTER"
-side = "BOTH"
-
-[[dependencies.blockbuddy]]
-modId = "player2npc"
-mandatory = false
-versionRange = "[0,)"
-ordering = "AFTER"
 side = "BOTH"

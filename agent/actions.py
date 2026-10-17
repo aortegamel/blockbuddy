@@ -23,7 +23,7 @@ class Actions:
         self.get_completed = get_completed_quests
         self.log = log
         self.mp = mp                  # multiplayer: no save files, maybe no OP
-        self.body = body              # "companion" (PlayerEngine entity) | "player" (own body)
+        self.body = body              # "companion" (built-in FakePlayer body) | "player" (own body)
         self.mark_complete = mark_complete or (lambda qid: None)
         self.quest_titles = {}        # id -> human title (daemon fills from the graph)
 
@@ -309,13 +309,13 @@ class Actions:
             return False, "no confirmation for smelting"
         return True, f"smelt confirmed ({self._inventory().get(out, 0)} {out} in inventory)"
 
-    # -- PlayerEngine companion (in-game mod) ---------------------------------
+    # -- built-in FakePlayer body commands (in-game mod) --------------------------
 
     def agent_state(self, timeout=10):
-        """Query the companion via /agent state; parse the [agentstate] JSON line."""
+        """Query the companion via /blockbuddy state; parse the [agentstate] JSON line."""
         first = self.bridge.call("chat_log", since=0)
         since = first["latest"] if first else 0
-        self.bridge.call("chat", text="/agent state")
+        self.bridge.call("chat", text="/blockbuddy state")
         deadline = time.time() + timeout
         while time.time() < deadline:
             logs = self.bridge.call("chat_log", since=since) or {"entries": []}
@@ -339,7 +339,7 @@ class Actions:
 
     def agent_mine(self, step):
         """Companion mines ANY registered block (modded ids included). If the
-        block is nowhere nearby, MineAndCollect just idles — so when the agent
+        block is nowhere nearby, the body idles — so when the agent
         stands still without progress, we walk it along an expanding spiral
         and re-issue the mine task at each stop (real exploration)."""
         import math
@@ -349,7 +349,7 @@ class Actions:
         before = (state0.get("inventory") or {}).get(want, 0)
         target = before + count
         deadline = time.time() + step.get("timeout", 600)
-        self.bridge.call("chat", text=f"/agent mine {block} {count}")
+        self.bridge.call("chat", text=f"/blockbuddy mine {block} {count}")
         home = state0.get("pos")
         last_pos, still_since = home, time.time()
         ring, leg = 90, 0
@@ -371,58 +371,48 @@ class Actions:
                     wz = int(home[2] + ring * math.sin(ang))
                     self.log(f"  agent idle — exploring toward {wx},{wz} (ring {ring})")
                     self.bridge.call("echo", text=f"[blockbuddy] no {want} here — scouting {wx},{wz}")
-                    self.bridge.call("chat", text=f"/agent run goto {wx} {int(pos[1])} {wz}")
+                    self.bridge.call("chat", text=f"/blockbuddy run goto {wx} {int(pos[1])} {wz}")
                     leg += 1
                     if leg % 8 == 0:
                         ring += 70
                     time.sleep(40)  # travel window
-                    self.bridge.call("chat", text=f"/agent mine {block} {count}")
+                    self.bridge.call("chat", text=f"/blockbuddy mine {block} {count}")
                     still_since = time.time()
-        self.bridge.call("chat", text="/agent stop")
+        self.bridge.call("chat", text="/blockbuddy stop")
         have = self._agent_inv(want)
         return have > before, f"agent {want}: {before} -> {have} (explored, wanted {target})"
 
-    def agent_get(self, step):
-        """Companion runs a full AltoClef gather/craft chain — VANILLA items only."""
-        item, count = self._bare(step["item"]), int(step.get("count", 1))
-        before = self._agent_inv(item)
-        self.bridge.call("chat", text=f"/agent run get {item} {count}")
-
-        def enough():
-            return self._agent_inv(item) >= count
-        ok = self._wait(enough, timeout=step.get("timeout", 600), poll=15,
-                        desc=f"agent getting {item}")
-        if not ok:
-            self.bridge.call("chat", text="/agent stop")
-        return ok, f"agent has {self._agent_inv(item)}x {item}"
 
     def agent_give(self, step):
-        """Direct agent->player transfer via /agent give (FTB quest tasks check
+        """Direct agent->player transfer via /blockbuddy give (FTB quest tasks check
         the PLAYER inventory). Calls the agent over with follow first."""
         item, count = self._bare(step["item"]), int(step.get("count", 1))
         before = self._inventory().get(item, 0)
-        self.bridge.call("chat", text="/agent run follow")
+        self.bridge.call("chat", text="/blockbuddy run follow")
 
         def close_and_given():
-            self.bridge.call("chat", text=f"/agent give {item} {count}")
+            self.bridge.call("chat", text=f"/blockbuddy give {item} {count}")
             time.sleep(2)
             return self._inventory().get(item, 0) >= before + count
         ok = self._wait(close_and_given, timeout=step.get("timeout", 120), poll=8,
                         desc=f"agent handing over {item}")
-        self.bridge.call("chat", text="/agent stop")
+        self.bridge.call("chat", text="/blockbuddy stop")
         have = self._inventory().get(item, 0)
         return have > before, f"player {item}: {before} -> {have}"
 
     def agent_run(self, step):
-        """Raw companion command: follow / goto x y z / attack <mob> / deposit / equip / stop."""
-        self.bridge.call("chat", text=f"/agent run {step['cmd']}")
+        """Raw companion steering: follow | goto <x> <y> <z> | stop."""
+        cmd = str(step.get("cmd", "")).strip().split()
+        if not cmd or cmd[0] not in ("follow", "goto", "stop"):
+            return self.manual({"reason": f"unsupported companion command '{step.get('cmd')}' (follow|goto|stop only)"})
+        self.bridge.call("chat", text=f"/blockbuddy run {step['cmd']}")
         return True, f"sent: {step['cmd']}"
 
     def agent_craft(self, step):
         """Server-side crafting from the AGENT's inventory — ANY recipe incl. modded."""
         item, count = self._bare(step["item"]), int(step.get("count", 1))
         before = self._agent_inv(item)
-        self.bridge.call("chat", text=f"/agent craft {step['item']} {count}")
+        self.bridge.call("chat", text=f"/blockbuddy craft {step['item']} {count}")
         time.sleep(2)
         have = self._agent_inv(item)
         return have >= before + count or have >= count, \
@@ -432,7 +422,7 @@ class Actions:
         """Pull items from containers/machine slots within 12 blocks of the agent."""
         item, count = self._bare(step["item"]), int(step.get("count", 1))
         before = self._agent_inv(item)
-        self.bridge.call("chat", text=f"/agent take {item} {count}")
+        self.bridge.call("chat", text=f"/blockbuddy take {item} {count}")
         time.sleep(2)
         have = self._agent_inv(item)
         return have > before, f"agent {item}: {before} -> {have}"
@@ -441,7 +431,7 @@ class Actions:
         """Store items from the agent into the nearest chest (within 12 blocks)."""
         item, count = self._bare(step["item"]), int(step.get("count", 1))
         before = self._agent_inv(item)
-        self.bridge.call("chat", text=f"/agent store {item} {count}")
+        self.bridge.call("chat", text=f"/blockbuddy store {item} {count}")
         time.sleep(2)
         have = self._agent_inv(item)
         return have < before or before == 0, f"agent {item}: {before} -> {have}"
@@ -480,18 +470,11 @@ class Actions:
             return False, "player never confirmed manual step"
         return True, "human handled it"
 
-    # models drift across body modes despite prompt rules — route structurally.
-    # companion mode: resource work goes to the PlayerEngine entity;
-    # player mode: agent_* actions fold back onto the player's own body.
-    COMPANION_REMAP = {"mine": "agent_mine", "goto_block": "agent_mine"}
     PLAYER_REMAP = {"agent_mine": "mine", "agent_craft": "craft",
-                    "agent_get": "craft", "agent_take": "manual", "agent_store": "manual"}
+                    "agent_take": "manual", "agent_store": "manual"}
 
     def _remap_for_body(self, name, action):
         if self.body == "companion":
-            if name in self.COMPANION_REMAP and action.get("block"):
-                action.setdefault("count", 2 if name == "goto_block" else 8)
-                return self.COMPANION_REMAP[name]
             return name
         # player mode
         if name == "agent_give":
@@ -501,12 +484,9 @@ class Actions:
             if cmd and cmd[0] == "goto" and len(cmd) >= 4:
                 action.update(x=float(cmd[1]), y=float(cmd[2]), z=float(cmd[3]))
                 return "goto"
-            if cmd and cmd[0] == "attack":
-                action["entity"] = cmd[1] if len(cmd) > 1 else ""
-                return "kill"
             if cmd and cmd[0] == "stop":
                 self.bridge.call("chat", text="#stop")
-            return "_noop_already_player"  # follow/pickup_drops/etc are meaningless solo
+            return "_noop_already_player"  # follow is meaningless solo
         if name in self.PLAYER_REMAP:
             if self.PLAYER_REMAP[name] == "manual":
                 action["reason"] = f"{name} has no player-body equivalent: {action}"

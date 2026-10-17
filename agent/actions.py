@@ -1,13 +1,13 @@
 """Action executors — translate planner steps into bridge ops and verify results.
 
-M2 implements: quest_checkmark, goto, goto_block, mine, collect (as mine-adjacent
-pickup wait), wait_for, chat, manual. Crafting/smelting/GUI actions are M3+ and
-report back as unsupported so the daemon escalates instead of pretending.
+The companion executes mining, crafting, movement, and item transfers.
+Player actions use Baritone or request help when the bridge cannot perform the action.
 
 Every executor returns (ok: bool, note: str). Verification is state-based
 (inventory deltas, position, quest progress), not trust-based.
 """
 import json
+import re
 import time
 
 # verified against FTB docs + live run: change_progress is ONE word (underscore)
@@ -170,12 +170,12 @@ class Actions:
         if self.body != "companion":
             return False, f"{item} x{self._inventory().get(item, 0)}"
         self.log(f"  collect fallback: sending the companion to mine {item}")
-        self.bridge.call("echo", text=f"[blockbuddy] not appearing — Bob will go get {item} instead")
+        self.bridge.call("echo", text=f"[blockbuddy] the companion will gather {item} instead")
         ok, note = self.agent_mine({"block": step["item"], "count": count,
                                     "timeout": step.get("timeout", 600)})
         if not ok:
             return False, f"collect fallback failed: {note}"
-        return self.agent_give({"item": item, "count": count})
+        return self.agent_give({"item": step["item"], "count": count})
 
     # -- M3: hands ------------------------------------------------------------
 
@@ -311,31 +311,63 @@ class Actions:
 
     # -- built-in FakePlayer body commands (in-game mod) --------------------------
 
-    def agent_state(self, timeout=10):
-        """Query the companion via /blockbuddy state; parse the [agentstate] JSON line."""
-        first = self.bridge.call("chat_log", since=0)
-        since = first["latest"] if first else 0
-        self.bridge.call("chat", text="/blockbuddy state")
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            logs = self.bridge.call("chat_log", since=since) or {"entries": []}
-            if logs.get("latest"):
-                since = logs["latest"]
-            for entry in logs.get("entries", []):
-                msg = entry["message"]
-                if "[agentstate]" in msg:
+    def agent_state(self, timeout=10, cancel_event=None):
+        """Read the companion state. Ignore malformed protocol messages."""
+        def call(op, **kwargs):
+            result = self.bridge.call(op, **kwargs)
+            if isinstance(result, tuple) and len(result) == 2:
+                return result[1] if result[0] else None
+            return result
+
+        first = call("chat_log", since=0)
+        since = first.get("latest", 0) if isinstance(first, dict) else 0
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        call("chat", text="/blockbuddy state")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            logs = call("chat_log", since=since)
+            if isinstance(logs, dict):
+                since = logs.get("latest", since)
+                entries = logs.get("entries", [])
+                for entry in entries if isinstance(entries, list) else []:
+                    msg = entry.get("message", "") if isinstance(entry, dict) else ""
+                    if not isinstance(msg, str) or not msg.startswith("[agentstate]"):
+                        continue
                     try:
-                        return json.loads(msg.split("[agentstate]", 1)[1].strip())
-                    except (ValueError, IndexError):
-                        pass
-            time.sleep(1.5)
+                        state = json.loads(msg[len("[agentstate]"):].strip())
+                    except (ValueError, UnicodeError, RecursionError):
+                        continue
+                    if isinstance(state, dict):
+                        return state
+            delay = min(0.25, max(0, deadline - time.monotonic()))
+            if cancel_event is not None:
+                cancel_event.wait(delay)
+            else:
+                time.sleep(delay)
         return None
 
-    def _agent_inv(self, item):
-        state = self.agent_state()
-        if not state or not state.get("inventory"):
+    @staticmethod
+    def _item_count(state, item):
+        inventory = state.get("inventory", {}) if isinstance(state, dict) else {}
+        if not isinstance(inventory, dict):
             return 0
-        return state["inventory"].get(self._bare(item), 0)
+        if item in ("#logs", "#minecraft:logs"):
+            return sum(n for key, n in inventory.items() if key.endswith(("_log", "_stem")))
+        if item in inventory:
+            return inventory[item]
+        if item.startswith("minecraft:") and item[10:] in inventory:
+            return inventory[item[10:]]
+        if ":" in item:
+            return 0
+        matches = [n for key, n in inventory.items()
+                   if key.split(":")[-1] == item or key.split(":")[-1].endswith("_" + item)]
+        return matches[0] if len(matches) == 1 else 0
+
+    def _agent_inv(self, item):
+        return self._item_count(self.agent_state(), item)
 
     def agent_mine(self, step):
         """Companion mines ANY registered block (modded ids included). If the
@@ -344,9 +376,9 @@ class Actions:
         and re-issue the mine task at each stop (real exploration)."""
         import math
         block, count = step["block"], int(step.get("count", 8))
-        want = self._bare(step.get("collect_item", block))
+        want = step.get("collect_item", block)
         state0 = self.agent_state() or {}
-        before = (state0.get("inventory") or {}).get(want, 0)
+        before = self._item_count(state0, want)
         target = before + count
         deadline = time.time() + step.get("timeout", 600)
         self.bridge.call("chat", text=f"/blockbuddy mine {block} {count}")
@@ -356,7 +388,7 @@ class Actions:
         while time.time() < deadline:
             time.sleep(12)
             st = self.agent_state() or {}
-            have = (st.get("inventory") or {}).get(want, 0)
+            have = self._item_count(st, want)
             if have >= target:
                 return True, f"agent {want}: {before} -> {have}"
             pos = st.get("pos")
@@ -380,47 +412,52 @@ class Actions:
                     still_since = time.time()
         self.bridge.call("chat", text="/blockbuddy stop")
         have = self._agent_inv(want)
-        return have > before, f"agent {want}: {before} -> {have} (explored, wanted {target})"
+        return have >= target, f"agent {want}: {before} -> {have} (explored, wanted {target})"
 
 
     def agent_give(self, step):
         """Direct agent->player transfer via /blockbuddy give (FTB quest tasks check
         the PLAYER inventory). Calls the agent over with follow first."""
-        item, count = self._bare(step["item"]), int(step.get("count", 1))
-        before = self._inventory().get(item, 0)
+        item, count = step["item"], int(step.get("count", 1))
+        before = self._item_count(self.bridge.call("state"), item)
         self.bridge.call("chat", text="/blockbuddy run follow")
 
         def close_and_given():
             self.bridge.call("chat", text=f"/blockbuddy give {item} {count}")
             time.sleep(2)
-            return self._inventory().get(item, 0) >= before + count
+            return self._item_count(self.bridge.call("state"), item) >= before + count
         ok = self._wait(close_and_given, timeout=step.get("timeout", 120), poll=8,
                         desc=f"agent handing over {item}")
         self.bridge.call("chat", text="/blockbuddy stop")
-        have = self._inventory().get(item, 0)
-        return have > before, f"player {item}: {before} -> {have}"
+        have = self._item_count(self.bridge.call("state"), item)
+        return have >= before + count, f"player {item}: {before} -> {have}"
 
     def agent_run(self, step):
         """Raw companion steering: follow | goto <x> <y> <z> | stop."""
         cmd = str(step.get("cmd", "")).strip().split()
-        if not cmd or cmd[0] not in ("follow", "goto", "stop"):
-            return self.manual({"reason": f"unsupported companion command '{step.get('cmd')}' (follow|goto|stop only)"})
-        self.bridge.call("chat", text=f"/blockbuddy run {step['cmd']}")
+        if cmd in (["follow"], ["stop"]):
+            safe_cmd = cmd[0]
+        elif len(cmd) == 4 and cmd[0] == "goto" and all(re.fullmatch(r"-?\d+", value) for value in cmd[1:]):
+            if any(abs(int(value)) > 30000000 for value in cmd[1:]):
+                return False, "companion coordinates exceed the world boundary"
+            safe_cmd = " ".join(cmd)
+        else:
+            return False, "companion command must be follow, stop, or goto with three integer coordinates"
+        self.bridge.call("chat", text=f"/blockbuddy run {safe_cmd}")
         return True, f"sent: {step['cmd']}"
 
     def agent_craft(self, step):
         """Server-side crafting from the AGENT's inventory — ANY recipe incl. modded."""
-        item, count = self._bare(step["item"]), int(step.get("count", 1))
+        item, count = step["item"], int(step.get("count", 1))
         before = self._agent_inv(item)
-        self.bridge.call("chat", text=f"/blockbuddy craft {step['item']} {count}")
+        self.bridge.call("chat", text=f"/blockbuddy craft {step['item']} {before + count}")
         time.sleep(2)
         have = self._agent_inv(item)
-        return have >= before + count or have >= count, \
-            f"agent {item}: {before} -> {have}"
+        return have >= before + count, f"agent {item}: {before} -> {have}"
 
     def agent_take(self, step):
         """Pull items from containers/machine slots within 12 blocks of the agent."""
-        item, count = self._bare(step["item"]), int(step.get("count", 1))
+        item, count = step["item"], int(step.get("count", 1))
         before = self._agent_inv(item)
         self.bridge.call("chat", text=f"/blockbuddy take {item} {count}")
         time.sleep(2)
@@ -429,7 +466,7 @@ class Actions:
 
     def agent_store(self, step):
         """Store items from the agent into the nearest chest (within 12 blocks)."""
-        item, count = self._bare(step["item"]), int(step.get("count", 1))
+        item, count = step["item"], int(step.get("count", 1))
         before = self._agent_inv(item)
         self.bridge.call("chat", text=f"/blockbuddy store {item} {count}")
         time.sleep(2)
@@ -499,6 +536,18 @@ class Actions:
     def run(self, step):
         action = dict(step["action"])
         name = action.pop("action")
+        for key in ("item", "block", "collect_item", "output", "entity", "target"):
+            value = action.get(key)
+            if value is not None and (not isinstance(value, str) or not re.fullmatch(
+                    r"(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+|#(?:minecraft:)?logs", value)):
+                return False, f"invalid {key} selector"
+        if "count" in action:
+            value = action["count"]
+            if isinstance(value, bool) or not isinstance(value, (int, str)) or not re.fullmatch(r"\d+", str(value)):
+                return False, "count must be a positive integer"
+            if not 1 <= int(value) <= 4096:
+                return False, "count must be between 1 and 4096"
+            action["count"] = int(value)
         new_name = self._remap_for_body(name, action)
         if new_name != name:
             self.log(f"  (remapped {name} -> {new_name} for body={self.body})")

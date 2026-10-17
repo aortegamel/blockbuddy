@@ -25,6 +25,10 @@ neoForge {
         server {
             server()
         }
+        gameTestServer {
+            type = "gameTestServer"
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'blockbuddy'
+        }
     }
 
     mods {
@@ -34,7 +38,10 @@ neoForge {
     }
 }
 
-// NeoForge artifact comes from the neoForge { version } block above — no explicit dep needed.
+dependencies {
+    // Optional local NeoForge mods, such as Minescript, stay outside the shipped jar.
+    runtimeOnly fileTree(dir: 'libs', include: ['*.jar'])
+}
 
 jar {
     manifest {

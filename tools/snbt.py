@@ -102,6 +102,8 @@ class _Parser:
         while self.i < self.n:
             c = self.s[self.i]
             if c == "\\":
+                if self.i + 1 >= self.n:
+                    raise SNBTError("unterminated string")
                 nxt = self.s[self.i + 1]
                 buf.append({"n": "\n", "t": "\t", "\\": "\\", quote: quote}.get(nxt, nxt))
                 self.i += 2

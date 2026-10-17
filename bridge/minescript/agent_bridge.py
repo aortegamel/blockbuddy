@@ -4,12 +4,16 @@ Start from in-game chat:  \agent_bridge
 Connects to the agent daemon on localhost:48750 (start daemon first) and
 serves JSON-lines requests: {"id": N, "op": "...", ...} -> {"id": N, "ok": true, "result": ...}
 
-Ops: probe, state, chat, echo, chat_log, getblock, stop
-Defensive about the Minescript API surface: anything missing is reported by
-"probe" and returns null in "state" instead of crashing the bridge.
+Ops include probe, state, chat, echo, chat_log, getblock, and stop.
+State retains legacy fields and adds player_name and world_info.
+world_info.time is day_ticks modulo 24000. daytime means time < 12000.
+Unavailable player_name and world_info fields are null.
+main(stop_event=None) shares its event with the chat listener.
+The stop operation replies before main closes its socket and joins the listener.
 """
 import json
-import os
+import math
+import queue
 import socket
 import threading
 import time
@@ -45,11 +49,12 @@ def op_probe(_req):
 
 
 def op_state(_req):
-    out = {}
+    out = {"name": None, "player_name": None,
+           "world_info": {"time": None, "daytime": None, "raining": None}}
     name = _fn("player_name")
     if name:
         try:
-            out["name"] = name()
+            out["name"] = out["player_name"] = name()
         except Exception:
             pass
     pos = _fn("player_position")
@@ -78,6 +83,12 @@ def op_state(_req):
                 val = getattr(info, key, None) if not isinstance(info, dict) else info.get(key)
                 if val is not None:
                     out[key] = val
+            # https://minescript.net/docs#world_info defines day_ticks as the day-night clock.
+            clock = out.get("day_ticks")
+            out["world_info"]["raining"] = out.get("raining")
+            if clock is not None:
+                out["world_info"]["time"] = clock % 24000
+                out["world_info"]["daytime"] = clock % 24000 < 12000
         except Exception:
             pass
     screen = _fn("screen_name")
@@ -228,70 +239,113 @@ OPS = {"probe": op_probe, "state": op_state, "chat": op_chat, "echo": op_echo,
        "container_click": op_container_click, "screenshot": op_screenshot}
 
 
-def chat_listener():
-    """Capture incoming chat (Baritone status, quest toasts that echo to chat)."""
+def chat_listener(stop_event=None):
+    """Capture chat until the shared stop event signals shutdown."""
+    if stop_event is None:
+        stop_event = threading.Event()
     eq_cls = _fn("EventQueue")
     if not eq_cls:
         return
     try:
         with eq_cls() as q:
             q.register_chat_listener()
-            while True:
-                event = q.get()
+            while not stop_event.is_set():
+                try:
+                    event = q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
                 msg = getattr(event, "message", None) or str(event)
                 CHAT_SEQ["n"] += 1
                 CHAT_LOG.append({"n": CHAT_SEQ["n"], "t": time.time(), "message": msg})
-                # one-word kill switch: player types .quit in chat
                 if ".quit" in msg.lower() and "[agent" not in msg and "[bridge" not in msg:
                     minescript.echo("[bridge] .quit received — shutting down")
-                    os._exit(0)
+                    stop_event.set()
     except Exception as exc:
         minescript.echo(f"[bridge] chat listener stopped: {exc}")
 
 
-def main():
-    threading.Thread(target=chat_listener, daemon=True).start()
-    while True:
+def main(stop_event=None):
+    """Serve requests until stop, then close the socket and join the listener."""
+    if stop_event is None:
+        stop_event = threading.Event()
+    listener = threading.Thread(target=chat_listener, args=(stop_event,),
+                                name="agent-bridge-chat", daemon=True)
+    listener.start()
+    retry_delay = 5
+    outage_reported = False
+    try:
         minescript.echo(f"[bridge] connecting to daemon at {HOST}:{PORT} ...")
-        try:
-            sock = socket.create_connection((HOST, PORT), timeout=10)
-            # connect timeout must NOT persist: the daemon can be silent for minutes
-            # while the LLM plans — a lingering timeout kills recv() (live-run crash)
-            sock.settimeout(None)
-        except OSError as exc:
-            minescript.echo(f"[bridge] FAILED to connect ({exc}) — retrying in 5s")
-            time.sleep(5)
-            continue
-        minescript.echo("[bridge] connected — agent has control. \\killjob to stop.")
-        buf = b""
-        dead = False
-        try:
-            while True:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    dead = True
-                    break
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    if not line.strip():
-                        continue
-                    req = json.loads(line)
-                    if req.get("op") == "stop":
-                        sock.sendall(json.dumps({"id": req.get("id"), "ok": True, "result": "bye"}).encode() + b"\n")
-                        return
-                    try:
-                        result = OPS[req["op"]](req)
-                        resp = {"id": req.get("id"), "ok": True, "result": result}
-                    except Exception as exc:
-                        resp = {"id": req.get("id"), "ok": False, "error": f"{type(exc).__name__}: {exc}"}
-                    sock.sendall(json.dumps(resp).encode() + b"\n")
-        except OSError:
-            dead = True
-        finally:
+        while not stop_event.is_set():
             try:
-                sock.close()
+                sock = socket.create_connection((HOST, PORT), timeout=10)
+            except OSError as exc:
+                if not outage_reported:
+                    minescript.echo(f"[bridge] FAILED to connect ({exc}) — retrying")
+                    outage_reported = True
+                stop_event.wait(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+                continue
+            retry_delay = 5
+            outage_reported = False
+            try:
+                # A read timeout only polls shutdown. A silent daemon stays connected.
+                sock.settimeout(0.2)
+                minescript.echo("[bridge] connected — agent has control. \\killjob to stop.")
+                buf = b""
+                while not stop_event.is_set():
+                    try:
+                        chunk = sock.recv(65536)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf and not stop_event.is_set():
+                        line, buf = buf.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        try:
+                            req = json.loads(line.decode("utf-8"))
+                            if not isinstance(req, dict):
+                                raise ValueError("request must be a JSON object")
+                            if not isinstance(req.get("op"), str) or not req["op"]:
+                                raise ValueError("request op must be a nonempty string")
+                            req_id = req.get("id")
+                            if (not isinstance(req_id, (str, int, float, type(None)))
+                                    or isinstance(req_id, bool)
+                                    or isinstance(req_id, float) and not math.isfinite(req_id)):
+                                raise ValueError("request id must be a string, number, or null")
+                        except (UnicodeError, ValueError, RecursionError) as exc:
+                            resp = {"id": None, "ok": False,
+                                    "error": f"{type(exc).__name__}: {exc}"}
+                        else:
+                            if req["op"] == "stop":
+                                stop_event.set()
+                                resp = {"id": req_id, "ok": True, "result": "bye"}
+                            else:
+                                try:
+                                    result = OPS[req["op"]](req)
+                                    resp = {"id": req_id, "ok": True, "result": result}
+                                except Exception as exc:
+                                    resp = {"id": req_id, "ok": False,
+                                            "error": f"{type(exc).__name__}: {exc}"}
+                        sock.sendall(json.dumps(resp).encode("utf-8") + b"\n")
             except OSError:
                 pass
-        minescript.echo("[bridge] disconnected — retrying in 2s (shim restarted?).")
-        time.sleep(2)
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+            if not stop_event.is_set():
+                minescript.echo("[bridge] disconnected — retrying")
+                outage_reported = True
+                stop_event.wait(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+    finally:
+        stop_event.set()
+        listener.join()
+
+
+if __name__ == "__main__":
+    main()

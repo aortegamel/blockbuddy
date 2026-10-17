@@ -288,8 +288,8 @@ def main():
     if args.body == "companion":
         # make sure a built-in companion exists in THIS world
         if actions.agent_state(timeout=6) is None:
-            log("no companion in this world — spawning Bob")
-            bridge.call("chat", text="/blockbuddy spawn Bob")
+            log("no companion in this world — spawning Alex")
+            bridge.call("chat", text="/blockbuddy spawn Alex")
             time.sleep(3)
 
     if args.plan:

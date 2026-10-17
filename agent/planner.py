@@ -32,15 +32,7 @@ def extract_json(text):
     start = text.find("{")
     if start == -1:
         raise ValueError("no JSON object in response")
-    depth = 0
-    for i, ch in enumerate(text[start:], start):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return json.loads(text[start:i + 1])
-    raise ValueError("unbalanced JSON in response")
+    return json.JSONDecoder().raw_decode(text[start:])[0]
 
 
 def plan(graph_path, state_path=None, out_path=None, max_quests=12):

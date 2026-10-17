@@ -3,6 +3,8 @@ package dev.blockbuddy;
 import java.util.List;
 import java.util.UUID;
 
+import com.google.gson.JsonObject;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
@@ -21,9 +23,13 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Built-in companion body: a server-side mob with its own inventory,
@@ -38,6 +44,11 @@ public class BlockBuddyEntity extends PathfinderMob {
     private UUID followUuid;
     private BlockPos gotoTarget;
     private Block miningBlock;
+    private TagKey<Block> miningTag;
+    private String miningSelector;
+    private BlockPos miningTarget;
+    private int miningProgressTick;
+    private int brainVoiceTicks;
     private int miningWant;
     private int miningMined;
 
@@ -52,98 +63,41 @@ public class BlockBuddyEntity extends PathfinderMob {
         super(type, level);
     }
 
-    /** Michael-voice: chat as the companion entity so the player sees <name> lines. */
+    /** Emit one event for the brain, or one local text response. */
+    public void reportEvent(String type, String item, int count, boolean ok, String fallback) {
+        if (!(level() instanceof ServerLevel server)) return;
+        String line;
+        if (brainVoiceTicks > 0 || BuddyConfig.USE_BRAIN_VOICE.get()) {
+            JsonObject event = new JsonObject();
+            event.addProperty("name", buddyName);
+            event.addProperty("type", type);
+            event.addProperty("item", item);
+            event.addProperty("count", count);
+            event.addProperty("ok", ok);
+            event.addProperty("fallback", fallback);
+            line = "[bbevent] " + event;
+        } else {
+            line = "<" + buddyName + "> " + fallback;
+        }
+        server.getServer().getPlayerList().broadcastSystemMessage(
+                net.minecraft.network.chat.Component.literal(line), false);
+    }
+
     public void say(String text) {
-        if (level() instanceof net.minecraft.server.level.ServerLevel server) {
-            server.getServer().getPlayerList().broadcastSystemMessage(
-                    net.minecraft.network.chat.Component.literal("<" + buddyName + "> " + text), false);
-        }
-        speakLine(text);
+        reportEvent("speech", "", 0, true, text);
     }
 
-    /**
-     * Spoken twin of say: best-effort Kokoro render plus a vanilla positional
-     * cue at the buddy, so he is audible nearby. Range scales with the
-     * proximityRange config; player-to-player spatial audio stays with Simple
-     * Voice Chat. Never throws, never blocks chat; silent unless voice is
-     * enabled and the model file is cached. No voicechat classes touched, so
-     * nothing breaks when that mod is absent.
-     */
-    private void speakLine(String text) {
-        final boolean enabled;
-        final int range;
-        final String voice;
-        final java.nio.file.Path model;
-        try {
-            enabled = BuddyConfig.voiceEnabled.get();
-            range = BuddyConfig.proximityRange.get();
-            voice = BuddyConfig.voiceName.get();
-            model = BuddyConfig.modelFile();
-        } catch (Throwable ignored) {
-            return; // config shape missing — text only
-        }
-        if (!enabled || text == null || text.isEmpty()) return;
-        if (model == null || !java.nio.file.Files.isRegularFile(model)) return;
-        if (!(level() instanceof net.minecraft.server.level.ServerLevel server)) return;
-        final BlockPos pos = blockPosition();
-        final float volume = Math.max(0.25F, Math.min(4.0F, range / 16.0F));
-        final String line = text.length() > 280 ? text.substring(0, 280) : text;
-        Thread voiceThread = new Thread(() -> {
-            try {
-                if (!renderVoice(voice, line)) return;
-                server.getServer().execute(() -> {
-                    try {
-                        server.playSound(null, pos,
-                                net.minecraft.sounds.SoundEvents.VILLAGER_AMBIENT,
-                                net.minecraft.sounds.SoundSource.VOICE, volume, 1.0F);
-                    } catch (Throwable ignored) {
-                        // client already gone — chat line already went out
-                    }
-                });
-            } catch (Throwable ignored) {
-                // synthesis failed — chat line already went out
-            }
-        }, "blockbuddy-voice");
-        voiceThread.setDaemon(true);
-        voiceThread.start();
+    public void setBrainVoice(boolean on) {
+        brainVoiceTicks = on ? 1200 : 0;
     }
 
-    // ponytail: best-effort wav render only. Vanilla has no per-line voice
-    // playback, so the audible cue stays a positional sound; upgrade to the
-    // voicechat API or a client-decoder packet when per-line audio matters.
-    private static boolean renderVoice(String voice, String text) {
-        final java.nio.file.Path out;
-        try {
-            out = java.nio.file.Files.createTempFile("blockbuddy-voice", ".wav");
-        } catch (Throwable ignored) {
-            return false;
+    @Override
+    public boolean hurt(DamageSource source, float amount) {
+        boolean hurt = super.hurt(source, amount);
+        if (hurt && amount > 0) {
+            reportEvent("hurt", source.getMsgId(), (int) Math.ceil(amount), false, "ow! that hurt.");
         }
-        String[][] attempts = {
-                {"kokoro-tts", "--voice", voice, "--out", out.toString(), text},
-                {"python3", "-m", "kokoro", "--voice", voice, "--out", out.toString(), text},
-        };
-        for (String[] cmd : attempts) {
-            try {
-                Process proc = new ProcessBuilder(cmd).redirectErrorStream(true).start();
-                // ponytail: fixed 60s cap; a hung TTS CLI must never wedge the voice thread
-                if (proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)
-                        && proc.exitValue() == 0 && java.nio.file.Files.size(out) > 0) {
-                    try {
-                        java.nio.file.Files.deleteIfExists(out);
-                    } catch (Throwable ignored) {
-                    }
-                    return true;
-                }
-                proc.destroyForcibly();
-            } catch (Throwable ignored) {
-                // CLI missing or failed — try the next one, else stay silent
-            }
-        }
-        try {
-            java.nio.file.Files.deleteIfExists(out);
-        } catch (Throwable ignored) {
-        }
-        return false;
+        return hurt;
     }
 
     public static AttributeSupplier attributes() {
@@ -160,6 +114,8 @@ public class BlockBuddyEntity extends PathfinderMob {
         super.addAdditionalSaveData(tag);
         tag.putString("BuddyName", buddyName);
         if (ownerUuid != null) tag.putUUID("Owner", ownerUuid);
+        if (followUuid != null) tag.putUUID("Follow", followUuid);
+        if (gotoTarget != null) tag.putLong("Goto", gotoTarget.asLong());
         tag.putBoolean("GuardMode", guardMode);
         tag.putLong("LastHeardTick", lastHeardTick);
         tag.putLong("GearedTick", gearedTick);
@@ -170,13 +126,19 @@ public class BlockBuddyEntity extends PathfinderMob {
     @Override
     public void readAdditionalSaveData(CompoundTag tag) {
         super.readAdditionalSaveData(tag);
-        buddyName = tag.getString("BuddyName");
-        if (tag.hasUUID("Owner")) ownerUuid = tag.getUUID("Owner");
+        buddyName = tag.contains("BuddyName") ? tag.getString("BuddyName") : "Michael";
+        ownerUuid = tag.hasUUID("Owner") ? tag.getUUID("Owner") : null;
+        followUuid = tag.hasUUID("Follow") ? tag.getUUID("Follow") : null;
+        gotoTarget = followUuid == null && tag.contains("Goto") ? BlockPos.of(tag.getLong("Goto")) : null;
+        if (gotoTarget != null && (level().isOutsideBuildHeight(gotoTarget)
+                || !level().getWorldBorder().isWithinBounds(gotoTarget))) gotoTarget = null;
+        cancelMining();
         guardMode = !tag.contains("GuardMode") || tag.getBoolean("GuardMode");
         lastHeardTick = tag.getLong("LastHeardTick");
         gearedTick = tag.contains("GearedTick") ? tag.getLong("GearedTick") : -1;
         askedTick = tag.getLong("AskedTick");
         ContainerHelper.loadAllItems(tag, inv, level().registryAccess());
+        markStocked();
     }
 
     /** Merge a stack into inv; returns the amount accepted. */
@@ -198,16 +160,18 @@ public class BlockBuddyEntity extends PathfinderMob {
                 remaining -= moved;
             }
         }
+        markStocked();
         return stack.getCount() - remaining;
     }
 
     public void setFollow(ServerPlayer player) {
+        cancelMining();
         followUuid = player.getUUID();
         gotoTarget = null;
-        if (!level().isClientSide) getNavigation().stop();
     }
 
     public void setGoto(BlockPos pos) {
+        cancelMining();
         gotoTarget = pos.immutable();
         followUuid = null;
         if (!level().isClientSide) {
@@ -222,21 +186,49 @@ public class BlockBuddyEntity extends PathfinderMob {
                 (int) Math.round(look.x * 12.0D), 0, (int) Math.round(look.z * 12.0D)));
     }
 
-    public void startMining(Block block, int count) {
-        miningBlock = block;
+    public boolean startMining(String selector, int count) {
+        String value = selector.equals("log") || selector.equals("logs") || selector.equals("#logs")
+                ? "#minecraft:logs" : selector;
+        boolean tag = value.startsWith("#");
+        ResourceLocation id = ResourceLocation.tryParse(tag ? value.substring(1) : value);
+        if (id == null || (!tag && (!BuiltInRegistries.BLOCK.containsKey(id)
+                || BuiltInRegistries.BLOCK.get(id) == Blocks.AIR))) return false;
+        cancelMining();
+        followUuid = null;
+        gotoTarget = null;
+        miningBlock = tag ? null : BuiltInRegistries.BLOCK.get(id);
+        miningTag = tag ? TagKey.create(net.minecraft.core.registries.Registries.BLOCK, id) : null;
+        miningSelector = (tag ? "#" : "") + id;
         miningWant = Math.max(1, count);
         miningMined = 0;
+        miningProgressTick = tickCount;
+        return true;
     }
 
     public boolean isMining() {
-        return miningBlock != null && miningMined < miningWant;
+        return miningSelector != null;
+    }
+
+    public boolean isFollowing() {
+        return followUuid != null;
+    }
+
+    public UUID getFollowUuid() {
+        return followUuid;
+    }
+
+    private void cancelMining() {
+        miningBlock = null;
+        miningTag = null;
+        miningSelector = null;
+        miningTarget = null;
+        if (!level().isClientSide) getNavigation().stop();
     }
 
     public void stopAll() {
         followUuid = null;
         gotoTarget = null;
-        miningBlock = null;
-        if (!level().isClientSide) getNavigation().stop();
+        cancelMining();
     }
 
     public void setOwner(ServerPlayer player) {
@@ -258,7 +250,7 @@ public class BlockBuddyEntity extends PathfinderMob {
         guardMode = guard;
     }
 
-    /** Slice 2 calls this whenever player chat names the buddy. */
+    /** Record each command that targets this buddy. */
     public void hearCommand() {
         lastHeardTick = tickCount;
     }
@@ -291,45 +283,23 @@ public class BlockBuddyEntity extends PathfinderMob {
         askedTick = tick;
     }
 
-    /** Next base block the self-gear chain still needs, or null when stocked. */
-    public Block needsGearStage() {
-        if (!hasItemContaining("log", "planks", "stick")) {
-            Block log = nearestLog();
-            return log != null ? log : Blocks.OAK_LOG;
-        }
-        if (!hasItemContaining("cobblestone")) return Blocks.COBBLESTONE;
-        if (!hasItemContaining("raw_iron", "iron_ingot", "iron_ore")) return Blocks.IRON_ORE;
-        return null;
-    }
-
-    private boolean hasItemContaining(String... needles) {
+    private void markStocked() {
+        if (!needsGear()) return;
+        boolean wood = false;
+        boolean stone = false;
+        boolean iron = false;
         for (ItemStack stack : inv) {
             if (stack.isEmpty()) continue;
-            ResourceLocation key = BuiltInRegistries.ITEM.getKey(stack.getItem());
-            if (key == null) continue;
-            for (String needle : needles) {
-                if (key.getPath().contains(needle)) return true;
+            String path = BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath();
+            wood |= path.contains("log") || path.contains("planks") || path.contains("stick");
+            stone |= path.contains("cobblestone");
+            iron |= path.contains("raw_iron") || path.contains("iron_ingot") || path.contains("iron_ore");
+            if (wood && stone && iron) {
+                markGeared();
+                reportEvent("stocked", "", 0, true, "I have wood, stone, and iron.");
+                return;
             }
         }
-        return false;
-    }
-
-    // ponytail: linear scan for any log type so gear-up works outside oak biomes; radius matches mineStep
-    private Block nearestLog() {
-        BlockPos center = blockPosition();
-        BlockPos best = null;
-        double bestDist = Double.MAX_VALUE;
-        for (BlockPos pos : BlockPos.betweenClosed(
-                center.offset(-12, -6, -12), center.offset(12, 6, 12))) {
-            if (level().getBlockState(pos).is(BlockTags.LOGS)) {
-                double d = pos.distSqr(center);
-                if (d < bestDist) {
-                    bestDist = d;
-                    best = pos.immutable();
-                }
-            }
-        }
-        return best == null ? null : level().getBlockState(best).getBlock();
     }
 
     /** Attacks every tick; steers only when maySteer. Returns true when engaging. */
@@ -366,21 +336,10 @@ public class BlockBuddyEntity extends PathfinderMob {
         getNavigation().moveTo(target, 1.0D);
         if (tickCount - lastTauntTick >= 200) {
             lastTauntTick = tickCount;
-            say("hey! leave " + owner.getGameProfile().getName() + " alone!");
+            reportEvent("guard", BuiltInRegistries.ENTITY_TYPE.getKey(target.getType()).toString(), 1, true,
+                    "hey! leave " + owner.getGameProfile().getName() + " alone!");
         }
         return true;
-    }
-
-    private void gearTick() {
-        if (!needsGear() || isMining()) return;
-        // ponytail: entity tickCount restarts at 0 on reload; clamp saved ticks forward so gear-up is not delayed for hours
-        if (askedTick > tickCount) askedTick = tickCount;
-        if (lastHeardTick > tickCount) lastHeardTick = tickCount;
-        if (tickCount - askedTick <= 1200 || tickCount - lastHeardTick <= 1200) return;
-        Block stage = needsGearStage();
-        if (stage == null) return;
-        say("gathering wood/stone, be right back!");
-        startMining(stage, 8);
     }
 
     public String getBuddyName() {
@@ -395,59 +354,108 @@ public class BlockBuddyEntity extends PathfinderMob {
     public void tick() {
         super.tick();
         if (level().isClientSide || !(level() instanceof ServerLevel server)) return;
+        if (brainVoiceTicks > 0) brainVoiceTicks--;
         if (isMining() && tickCount % 10 == 0) mineStep(server);
         // Guard attacks every tick; on steer ticks it owns navigation and preempts follow/goto.
         boolean engaged = guardTick(server, tickCount % 20 == 0 && !isMining());
-        if (engaged || isMining()) {
-            gearTick();
-            return;
-        }
+        if (engaged || isMining()) return;
         // moveTo resets the path, so re-issue steering at most every 20 ticks.
         if (tickCount % 20 != 0) return;
         if (followUuid != null) {
             if (!(server.getPlayerByUUID(followUuid) instanceof ServerPlayer target)) {
-                followUuid = null;
+                getNavigation().stop();
                 return;
             }
             if (distanceToSqr(target) > 9.0D) getNavigation().moveTo(target, 1.0D);
             else getNavigation().stop();
         } else if (gotoTarget != null) {
-            if (distanceToSqr(gotoTarget.getX() + 0.5D, getY(), gotoTarget.getZ() + 0.5D) < 4.0D) {
+            if (distanceToSqr(Vec3.atBottomCenterOf(gotoTarget)) < 4.0D) {
                 gotoTarget = null;
                 getNavigation().stop();
+                reportEvent("arrived", "", 0, true, "I'm here!");
             } else {
                 getNavigation().moveTo(
                         gotoTarget.getX() + 0.5D, gotoTarget.getY(), gotoTarget.getZ() + 0.5D, 1.0D);
             }
         }
-        gearTick();
     }
 
-    // ponytail: O(r^3) block scan every 10 ticks; shrink the radius if it ever matters.
+    private boolean matchesMining(BlockState state) {
+        return miningTag != null ? state.is(miningTag) : miningBlock != null && state.is(miningBlock);
+    }
+
+    private void finishMining(boolean ok, String reason) {
+        String item = miningSelector;
+        int mined = miningMined;
+        cancelMining();
+        reportEvent(ok ? "mined" : "failed", item, mined, ok,
+                ok ? "mined " + mined + " " + item + "!" : reason + " Gathered " + mined + " " + item + ".");
+    }
+
+    // ponytail: scan a fixed local volume only when the current target disappears.
     private void mineStep(ServerLevel server) {
-        BlockPos center = blockPosition();
-        BlockPos best = null;
-        double bestDist = Double.MAX_VALUE;
-        for (BlockPos pos : BlockPos.betweenClosed(
-                center.offset(-12, -6, -12), center.offset(12, 6, 12))) {
-            if (server.getBlockState(pos).is(miningBlock)) {
-                double d = pos.distSqr(center);
-                if (d < bestDist) {
-                    bestDist = d;
-                    best = pos.immutable();
+        if (miningTarget != null && !matchesMining(server.getBlockState(miningTarget))) miningTarget = null;
+        if (miningTarget == null) {
+            BlockPos center = blockPosition();
+            double bestDist = Double.MAX_VALUE;
+            for (BlockPos pos : BlockPos.betweenClosed(
+                    center.offset(-12, -6, -12), center.offset(12, 6, 12))) {
+                if (!matchesMining(server.getBlockState(pos))) continue;
+                double distance = pos.distSqr(center);
+                if (distance < bestDist) {
+                    bestDist = distance;
+                    miningTarget = pos.immutable();
                 }
             }
         }
-        if (best == null) return; // nothing in range — the daemon walks the body elsewhere
-        if (bestDist > 16.0D) {
-            getNavigation().moveTo(best.getX() + 0.5D, best.getY(), best.getZ() + 0.5D, 1.0D);
+        if (miningTarget == null) {
+            if (tickCount - miningProgressTick >= 100) finishMining(false, "I couldn't find any nearby.");
             return;
         }
-        BlockState state = server.getBlockState(best);
-        BlockEntity be = server.getBlockEntity(best);
-        List<ItemStack> drops = Block.getDrops(state, server, best, be);
-        server.destroyBlock(best, false);
-        for (ItemStack drop : drops) insertStack(drop);
-        if (++miningMined >= miningWant) miningBlock = null;
+        if (tickCount - miningProgressTick >= 200) {
+            finishMining(false, "I couldn't reach the block.");
+            return;
+        }
+        BlockState state = server.getBlockState(miningTarget);
+        if (state.getDestroySpeed(server, miningTarget) < 0) {
+            finishMining(false, "I can't break that block.");
+            return;
+        }
+        Vec3 center = Vec3.atCenterOf(miningTarget);
+        BlockHitResult hit = server.clip(new ClipContext(
+                getEyePosition(), center, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this));
+        if (distanceToSqr(center) > 16.0D || !hit.getBlockPos().equals(miningTarget)) {
+            getNavigation().moveTo(center.x, miningTarget.getY(), center.z, 1.0D);
+            return;
+        }
+        ItemStack tool = ItemStack.EMPTY;
+        boolean needsTool = state.requiresCorrectToolForDrops();
+        float bestSpeed = needsTool ? 0.0F : 1.0F;
+        for (ItemStack stack : inv) {
+            if (stack.isEmpty() || (needsTool && !stack.isCorrectToolForDrops(state))) continue;
+            float speed = stack.getDestroySpeed(state);
+            if (speed > bestSpeed) {
+                bestSpeed = speed;
+                tool = stack;
+            }
+        }
+        if (needsTool && tool.isEmpty()) {
+            finishMining(false, "I need a suitable tool to mine that block.");
+            return;
+        }
+        BlockEntity blockEntity = server.getBlockEntity(miningTarget);
+        List<ItemStack> drops = Block.getDrops(state, server, miningTarget, blockEntity, this, tool);
+        if (!server.destroyBlock(miningTarget, false)) {
+            finishMining(false, "I couldn't break the block.");
+            return;
+        }
+        if (!tool.isEmpty()) tool.getItem().mineBlock(tool, server, state, miningTarget, this);
+        for (ItemStack drop : drops) {
+            int accepted = insertStack(drop);
+            if (accepted < drop.getCount()) spawnAtLocation(drop.copyWithCount(drop.getCount() - accepted));
+        }
+        miningTarget = null;
+        miningProgressTick = tickCount;
+        if (++miningMined >= miningWant) finishMining(true, "");
     }
 }

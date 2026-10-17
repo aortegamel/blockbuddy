@@ -63,15 +63,22 @@ def provider():
     return _model()
 
 
-def _chat(model, system, prompt, max_tokens):
-    body = json.dumps({
+def _chat(model, system, prompt, max_tokens, *, history=None, temperature=None):
+    messages = [{"role": "system", "content": system}]
+    for entry in history or ():
+        if (isinstance(entry, dict)
+                and entry.get("role") in ("user", "assistant")
+                and isinstance(entry.get("content"), str)):
+            messages.append({"role": entry["role"], "content": entry["content"]})
+    messages.append({"role": "user", "content": prompt})
+    payload = {
         "model": model,
         "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-    }).encode()
+        "messages": messages,
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     key = _api_key()
     if key:
@@ -82,14 +89,17 @@ def _chat(model, system, prompt, max_tokens):
     return data["choices"][0]["message"]["content"]
 
 
-def complete(system, prompt, max_tokens=4000, chain=None):
-    """Text response for a system+user pair; falls through the model chain
-    on any failure. `chain` overrides the configured models."""
+def complete(system, prompt, max_tokens=4000, chain=None, *, history=None, temperature=None):
+    """Return a response, trying each model after a failure.
+
+    The chain overrides configured models. History accepts user and assistant
+    messages with string content. Malformed entries do not enter the request.
+    """
     models = [m for m in (chain or []) if m] or [_model()] + _fallback_models()
     last_error = None
     for m in models:
         try:
-            return _chat(m, system, prompt, max_tokens)
+            return _chat(m, system, prompt, max_tokens, history=history, temperature=temperature)
         except Exception as exc:
             last_error = exc
             if len(models) > 1:

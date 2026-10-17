@@ -9,12 +9,9 @@ Two body modes (BLOCKBUDDY_BODY):
 """
 
 _HEADER = """\
-You are the strategic planner for an autonomous agent playing a heavily customized \
-Minecraft quest modpack (1.21.1 NeoForge). The world is barren: \
-no ores underground, dirt is scarce, resources come from processing, plants \
-(Mystical Agriculture, AgriCraft), bees, and mod machines. Progression follows \
-an FTB Quests book; you are given the quest dependency graph and current game \
-state, and must plan concrete actions.
+You plan concrete actions for a Minecraft companion (1.21.1 NeoForge).
+Use the supplied quest graph and current game state.
+Do not assume a specific modpack, biome, resource distribution, or custom recipe.
 """
 
 _COMPANION_BODY = """\
@@ -23,11 +20,11 @@ all gathering, mining, and hauling; it works while the player is free) and
 the PLAYER (fallback + crafting with human help).
 
 COMPANION actions (STRONGLY PREFERRED for resource work):
-- {"action": "agent_mine", "block": "kubejs:dead_log", "count": 16}   # mines ANY block incl. modded ids, collects drops into the AGENT's inventory
-- {"action": "agent_craft", "item": "kubejs:flimsy_planks", "count": 8} # crafts ANY recipe incl. modded/kubejs — ingredients must ALREADY be in the AGENT's inventory (agent_mine/agent_take them first)
+- {"action": "agent_mine", "block": "#minecraft:logs", "count": 16} # gather wood into the companion inventory
+- {"action": "agent_craft", "item": "minecraft:oak_planks", "count": 8} # ingredients must already exist in the companion inventory
 - {"action": "agent_take", "item": "copper_ingot", "count": 8}        # pull from chests/machine slots within 12 blocks of the agent
 - {"action": "agent_store", "item": "cobblestone", "count": 64}       # store into the nearest chest
-- {"action": "agent_give", "item": "dead_log", "count": 16}           # transfer agent -> player. CRITICAL: quest item tasks check the PLAYER's inventory, so always agent_give after gathering/crafting!
+- {"action": "agent_give", "item": "minecraft:oak_log", "count": 16} # transfer items to the player for quest checks
 - {"action": "agent_run", "cmd": "follow"}                            # raw steering: follow | goto <x> <y> <z> | stop
 Typical quest flow: agent_mine ingredients -> agent_craft item -> agent_give to player.
 agent_mine SEARCHES for the block itself: it explores the world until it finds
@@ -49,7 +46,7 @@ so item quests auto-complete the moment the items are collected — there is no
 transfer step.
 
 PLAYER-BODY resource actions:
-- {"action": "mine", "block": "kubejs:dead_log", "count": 16}   # Baritone finds and mines ANY block incl. modded ids; drops are picked up by walking over them; explores to find rare blocks (use "timeout": 900 for e.g. minecraft:oxidized_cut_copper) — NEVER escalate "location unknown" to manual
+- {"action": "mine", "block": "minecraft:oak_log", "count": 16} # Baritone finds the exact block. Use observed ids for modded blocks.
 - {"action": "goto_block", "block": "mod:block_id"}             # path to nearest matching block
 - {"action": "kill", "entity": "mod:entity_id", "count": N}     # melee loop; walk near the corpse afterwards picks up drops (plan a follow-up collect for the drop item)
 Mob drops: kill, then {"action":"collect","item":"minecraft:string","count":N}
@@ -77,18 +74,12 @@ implements these and nothing else):
 """
 
 _WORLD_FACTS = """\
-WORLD FACTS — this pack overrides vanilla Minecraft; NEVER assume vanilla resources:
-- There are NO living trees and NO vanilla logs (no minecraft:oak_log etc. exist
-  anywhere). Wood comes from DEAD TREES: mine "kubejs:dead_log". Planks are
-  "kubejs:flimsy_planks" (crafted from dead logs). Sticks come from flimsy planks.
-- There are NO ores underground — no coal, iron, copper, or any ore blocks.
-  Early metal is copper: mine "minecraft:oxidized_cut_copper" from surface ruins.
-  Fuel is charcoal from dead logs, not coal.
-- Dirt/grass are scarce; the ground is dried earth. Food and plants come from
-  quests, crops, and mod mechanics — not from wild vegetation.
-- Enchanted-mod seeds (belladonna, mandrake, wolfsbane, snowbell, water
-  artichoke) drop from breaking the sparse GRASS TUFTS that survived; their
-  FLOWERS/roots come from planting those seeds on farmland and harvesting.
+World information:
+- Use observed inventory, terrain, world_info, and storage before choosing resources.
+- Vanilla wood uses logs, matching planks, and sticks.
+- The companion accepts #minecraft:logs for wood mining.
+- Use minecraft:stone when you need cobblestone from ordinary stone.
+- Modded worlds can change recipes and drops. Use observed ids rather than invented replacements.
 """
 
 _RULES = """\
@@ -107,14 +98,12 @@ Rules:
 - Ocean/large water crossings: prefer land routes; if a crossing is essential,
   plan crafting a boat from stored wood followed by a "manual" step to drive
   it — boat piloting is not automated yet.
-- Recipes in this pack are HEAVILY customized. When you are not certain of a
-  recipe, do not invent ingredient lists — emit the craft action and let the
-  actuator resolve the real recipe from game data, or flag with "manual".
+- If a recipe is unknown, let agent_craft resolve it from game data.
+  Do not invent modded ingredients or claim success without inventory changes.
 - Item tasks with "itemfilters:tag" accept ANY item matching the NBT tag filter.
 - Prefer cheap, reliable steps. Note danger (mobs, night) in step notes.
-- Only target blocks that plausibly EXIST in this barren wasteland (dead logs,
-  oxidized copper ruins, stone). Saplings, crops, and mod items usually come
-  from quests, loot, bees, or crafting — NOT from the terrain.
+- Choose blocks from the observed world or from the requested quest.
+  Do not assume a barren world, absent ores, or custom wood recipes.
 - Output schema:
 {
   "target_quests": [{"id": "...", "title": "...", "why": "..."}],

@@ -34,17 +34,22 @@ public class BlockBuddy {
         ENTITIES.register(modBus);
         container.registerConfig(BuddyConfig.type(), BuddyConfig.SPEC);
         NeoForge.EVENT_BUS.register(this);
-        // Supplier variant, client only: classes resolve when the Mods menu opens, never on a server.
         if (net.neoforged.fml.loading.FMLEnvironment.dist == Dist.CLIENT) {
-            java.util.function.Supplier<IConfigScreenFactory> screen =
-                    () -> (c, parent) -> new ConfigurationScreen(c, parent);
-            container.registerExtensionPoint(IConfigScreenFactory.class, screen);
+            ClientConfig.register(container);
         }
     }
 
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
         BlockBuddyCommand.register(event.getDispatcher());
+    }
+
+    private static final class ClientConfig {
+        private static void register(ModContainer container) {
+            java.util.function.Supplier<IConfigScreenFactory> screen =
+                    () -> (c, parent) -> new ConfigurationScreen(c, parent);
+            container.registerExtensionPoint(IConfigScreenFactory.class, screen);
+        }
     }
 
     @EventBusSubscriber(modid = "blockbuddy", bus = EventBusSubscriber.Bus.MOD)

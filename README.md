@@ -1,6 +1,7 @@
 # BlockBuddy
 
-**An autonomous AI player for _modded_ Minecraft.**
+> Forked from [minemind](https://github.com/Boyan253/minemind.git) — reworked into a Steve-voice NL companion for modded Minecraft.
+
 
 BlockBuddy reads your modpack's quest book, plans with an LLM, and spawns a
 built-in server-side FakePlayer body to do the work — mining, crafting (modded

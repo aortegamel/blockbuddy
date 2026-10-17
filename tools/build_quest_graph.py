@@ -1,4 +1,4 @@
-"""Build quest_graph.json from the ATM9 pack's FTB Quests SNBT files.
+"""Build quest_graph.json from the ATM10 pack's FTB Quests SNBT files.
 
 Reads chapters/*.snbt + the ftbquestlocalizer lang file, resolves titles and
 descriptions, flattens tasks/rewards/dependencies, and emits a single JSON
@@ -7,6 +7,7 @@ DAG the planner can consume. Also runs sanity checks (dangling deps, cycles).
 Usage: python tools/build_quest_graph.py
 """
 import json
+import os
 import re
 import sys
 from collections import deque
@@ -15,8 +16,12 @@ from pathlib import Path
 import snbt
 
 ROOT = Path(__file__).resolve().parent.parent
-QUESTS = ROOT / "pack/extracted/overrides/config/ftbquests/quests"
-LANG = ROOT / "pack/extracted/overrides/kubejs/assets/ftbquestlocalizer/lang/en_us.json"
+_MC = os.environ.get("BLOCKBUDDY_MC_DIR")
+if not _MC:
+    sys.exit("set BLOCKBUDDY_MC_DIR to your instance's minecraft/ folder")
+_Q = Path(_MC) / "config" / "ftbquests" / "quests"
+QUESTS = _Q
+LANG = _Q / "lang" / "en_us.json"
 OUT = ROOT / "data/quest_graph.json"
 
 FORMAT_CODES = re.compile(r"&[0-9a-fk-or]")
@@ -78,7 +83,18 @@ def quest_fallback_title(quest_parsed):
 
 
 def main():
-    lang = json.loads(LANG.read_text(encoding="utf-8"))
+    lang = {}
+    if LANG.is_file():
+        lang = json.loads(LANG.read_text(encoding="utf-8"))
+    elif LANG.is_dir():
+        # ATM10: en_us/ is a dir of SNBT files (chapter.snbt, chapters/*.snbt, ...)
+        for f in sorted(LANG.rglob("*.snbt")):
+            try:
+                data = snbt.load(f)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                lang.update({k: v for k, v in data.items() if isinstance(v, str)})
     chapters_out = []
     all_ids = {}
     dep_edges = []
@@ -142,9 +158,9 @@ def main():
     has_cycle = seen != len(all_ids)
 
     graph = {
-        "pack": "ATM9",
-        "minecraft": "1.20.1",
-        "modloader": "forge-47.4.0",
+        "pack": "ATM10",
+        "minecraft": "1.21.1",
+        "modloader": "neoforge-21.1.x",
         "chapters": chapters_out,
         "stats": {
             "chapters": len(chapters_out),

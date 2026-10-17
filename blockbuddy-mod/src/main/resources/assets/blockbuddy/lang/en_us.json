@@ -1,0 +1,15 @@
+{
+  "blockbuddy.configuration.title": "Michael — Companion Settings",
+  "blockbuddy.configuration.companionName": "Companion name",
+  "blockbuddy.configuration.companionName.tooltip": "What Michael calls himself in chat. Rename him here.",
+  "blockbuddy.configuration.voiceEnabled": "Voice (Kokoro TTS)",
+  "blockbuddy.configuration.voiceEnabled.tooltip": "Speak Michael's lines aloud. OFF by default — enabling asks before downloading the ~340MB voice model.",
+  "blockbuddy.configuration.voiceEngine": "Voice engine",
+  "blockbuddy.configuration.voiceEngine.tooltip": "TTS engine. Kokoro only for now.",
+  "blockbuddy.configuration.voiceName": "Voice",
+  "blockbuddy.configuration.voiceName.tooltip": "Kokoro voice. am_michael by default.",
+  "blockbuddy.configuration.proximityRange": "Hearing distance (blocks)",
+  "blockbuddy.configuration.proximityRange.tooltip": "How far away Michael's voice carries. 4–64 blocks.",
+  "blockbuddy.configuration.serverFeatures": "Autonomous agent features",
+  "blockbuddy.configuration.serverFeatures.tooltip": "Future quest-driving automation. OFF by default — Michael only chats unless you enable this."
+}

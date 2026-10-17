@@ -251,41 +251,47 @@ def chat_listener():
 
 def main():
     threading.Thread(target=chat_listener, daemon=True).start()
-    minescript.echo(f"[bridge] connecting to daemon at {HOST}:{PORT} ...")
-    try:
-        sock = socket.create_connection((HOST, PORT), timeout=10)
-        # connect timeout must NOT persist: the daemon can be silent for minutes
-        # while the LLM plans — a lingering timeout kills recv() (live-run crash)
-        sock.settimeout(None)
-    except OSError as exc:
-        minescript.echo(f"[bridge] FAILED to connect ({exc}) — start the daemon first:")
-        minescript.echo("[bridge]   python agent/daemon.py")
-        return
-    minescript.echo("[bridge] connected — agent has control. \\killjob to stop.")
-    buf = b""
-    try:
-        while True:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if not line.strip():
-                    continue
-                req = json.loads(line)
-                if req.get("op") == "stop":
-                    sock.sendall(json.dumps({"id": req.get("id"), "ok": True, "result": "bye"}).encode() + b"\n")
-                    return
-                try:
-                    result = OPS[req["op"]](req)
-                    resp = {"id": req.get("id"), "ok": True, "result": result}
-                except Exception as exc:
-                    resp = {"id": req.get("id"), "ok": False, "error": f"{type(exc).__name__}: {exc}"}
-                sock.sendall(json.dumps(resp).encode() + b"\n")
-    finally:
-        sock.close()
-        minescript.echo("[bridge] disconnected.")
-
-
-main()
+    while True:
+        minescript.echo(f"[bridge] connecting to daemon at {HOST}:{PORT} ...")
+        try:
+            sock = socket.create_connection((HOST, PORT), timeout=10)
+            # connect timeout must NOT persist: the daemon can be silent for minutes
+            # while the LLM plans — a lingering timeout kills recv() (live-run crash)
+            sock.settimeout(None)
+        except OSError as exc:
+            minescript.echo(f"[bridge] FAILED to connect ({exc}) — retrying in 5s")
+            time.sleep(5)
+            continue
+        minescript.echo("[bridge] connected — agent has control. \\killjob to stop.")
+        buf = b""
+        dead = False
+        try:
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    dead = True
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                    req = json.loads(line)
+                    if req.get("op") == "stop":
+                        sock.sendall(json.dumps({"id": req.get("id"), "ok": True, "result": "bye"}).encode() + b"\n")
+                        return
+                    try:
+                        result = OPS[req["op"]](req)
+                        resp = {"id": req.get("id"), "ok": True, "result": result}
+                    except Exception as exc:
+                        resp = {"id": req.get("id"), "ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                    sock.sendall(json.dumps(resp).encode() + b"\n")
+        except OSError:
+            dead = True
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        minescript.echo("[bridge] disconnected — retrying in 2s (shim restarted?).")
+        time.sleep(2)

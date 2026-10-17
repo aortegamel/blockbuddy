@@ -13,14 +13,12 @@ recipes included), fighting, hauling — while you keep playing. It is built for
 
 ---
 
-## Target pack: ATM9 (Forge 1.20.1)
+## Target pack: ATM10 (NeoForge 1.21.1)
 
-BlockBuddy is **Forge-only**: Minecraft 1.20.1, Forge 47.x, JDK 17.
-The reference pack is **All the Mods 9 (ATM9)** — the last All the Mods line
-built for Forge on 1.20.1. Its successor ATM10 moved to NeoForge on
-Minecraft 1.21.1, so ATM9 is the current Forge ATM target.
-Sources: [ATM9 on CurseForge](https://www.curseforge.com/minecraft/modpacks/all-the-mods-9)
-(Forge, 1.20.1) and [ATM10 files](https://www.curseforge.com/minecraft/modpacks/all-the-mods-10/files/all)
+BlockBuddy is **NeoForge-only**: Minecraft 1.21.1, NeoForge 21.1.x, JDK 21.
+The reference pack is **All the Mods 10 (ATM10)** — built for NeoForge on
+Minecraft 1.21.1.
+Sources: [ATM10 on CurseForge](https://www.curseforge.com/minecraft/modpacks/all-the-mods-10)
 (NeoForge, 1.21.1).
 
 ## Why this exists
@@ -29,7 +27,7 @@ Every well-known Minecraft AI project is **vanilla-only**:
 
 | Project | Why it can't play your modpack |
 |---|---|
-| Voyager, Mindcraft, mineflayer bots | Speak the vanilla protocol — can't even join a Forge server |
+| Voyager, Mindcraft, mineflayer bots | Speak the vanilla protocol — can't even join a NeoForge server |
 | Baritone-style executors | Brilliant pathing/mining, but vanilla item catalogues and Fabric-only builds |
 | STEVE-1, JARVIS-VLA, pixel agents | Research models: vanilla training data, need an RTX 3090, ~5 FPS |
 | AI-Player, ChatClef companions | Fabric-only, vanilla capabilities, cloud-locked brains |
@@ -70,7 +68,7 @@ live. BlockBuddy targets exactly that gap.
 - **Escalates gracefully.** What it can't do yet (machine GUIs, claiming
   quest rewards), it asks for in chat and waits for your `.done`.
 
-Live-tested on Forge 1.20.1 with a 500+ quest FTB pack — the
+Live-tested on NeoForge 1.21.1 with a 500+ quest FTB pack — the
 built-in body autonomously mined modded blocks, crafted through modded recipe
 chains, and progressed real quests.
 
@@ -86,7 +84,7 @@ chains, and progressed real quests.
 │    ▼                                                                 │
 │  TCP 127.0.0.1:48750  (JSON lines)                                   │
 │    ▲                                                                 │
-│ ┌──┴───────────────── Minecraft (Forge) ──────────────────────────┐  │
+│ ┌──┴───────────────── Minecraft (NeoForge) ───────────────────────┐  │
 │ │ Minescript bridge  ── chat/state/inventory I/O                  │  │
 │ │ blockbuddy mod ── /blockbuddy commands → built-in FakePlayer     │  │
 │ │   body: own inventory, vanilla pathfinding + destroyBlock mining │  │
@@ -100,14 +98,14 @@ only does what models are good at: deciding what to do next.
 
 ## Quick start
 
-**Requirements:** a Forge 1.20.1 instance (ATM9), Python 3.10+, JDK 17+ (only to
+**Requirements:** a NeoForge 1.21.1 instance (ATM10), Python 3.10+, JDK 21+ (only to
 build the mod), and a brain (local opencode server by default — see `.env` below).
 
 ```bash
 git clone <repo-url> && cd blockbuddy
 
 # 1. mods into your instance's mods/ folder:
-#    - Minescript (Forge 1.20.1) for the chat/state bridge
+#    - Minescript (NeoForge 1.21.1) for the chat/state bridge
 #    - blockbuddy: cd blockbuddy-mod && ./gradlew build   → build/libs/*.jar
 
 # 2. point the tools at your instance and install the bridge
@@ -173,7 +171,7 @@ BlockBuddy stands on excellent shoulders:
 
 Avoided by design (replaced, not used): PlayerEngine / Player2NPC (LGPL-3.0),
 Automatone, AltoClef, and Baritone stay out of the dependency tree so the repo
-and the built jar stay MIT-only with zero downloaded jars beyond the Forge
+and the built jar stay MIT-only with zero downloaded jars beyond the NeoForge
 toolchain.
 
 ## License

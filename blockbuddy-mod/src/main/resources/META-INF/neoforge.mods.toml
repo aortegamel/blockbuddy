@@ -1,25 +1,25 @@
 modLoader = "javafml"
-loaderVersion = "[47,)"
+loaderVersion = "[4,)"
 license = "MIT"
 
 [[mods]]
 modId = "blockbuddy"
-version = "0.4.1"
+version = "0.5.0"
 displayName = "BlockBuddy"
 description = '''
 Exposes a built-in FakePlayer body to an external planner via /blockbuddy commands.
 '''
 
 [[dependencies.blockbuddy]]
-modId = "forge"
+modId = "neoforge"
 mandatory = true
-versionRange = "[47,)"
+versionRange = "[21.1,)"
 ordering = "NONE"
 side = "BOTH"
 
 [[dependencies.blockbuddy]]
 modId = "minecraft"
 mandatory = true
-versionRange = "[1.20.1,)"
+versionRange = "[1.21.1,1.22)"
 ordering = "NONE"
 side = "BOTH"

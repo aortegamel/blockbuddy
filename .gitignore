@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 .env
+.venv/
+venv/
 
 # generated / personal runtime data
 pack/
@@ -8,8 +10,16 @@ data/*
 !data/.gitkeep
 vendor/
 
-# mod build artifacts + local jars
+# mod build artifacts + local jars + run dirs
 blockbuddy-mod/build/
 blockbuddy-mod/.gradle/
 blockbuddy-mod/libs/
 blockbuddy-mod/run/
+*.jar
+!blockbuddy-mod/gradle/wrapper/gradle-wrapper.jar
+
+# IDE / OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

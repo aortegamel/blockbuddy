@@ -1,27 +1,47 @@
 plugins {
-    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'java-library'
+    id 'idea'
+    id 'net.neoforged.moddev' version '2.0.148'
 }
 
 group = 'dev.blockbuddy'
-version = "0.4.1"
+version = "0.5.0"
 base { archivesName = 'blockbuddy' }
 
-java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
-minecraft {
-    mappings channel: 'official', version: '1.20.1'
+neoForge {
+    version = "21.1.143"
+
+    parchment {
+        minecraftVersion = "1.21.1"
+        mappingsVersion = "2024.11.17"
+    }
+
+    runs {
+        client {
+            client()
+        }
+        server {
+            server()
+        }
+    }
+
+    mods {
+        blockbuddy {
+            sourceSet(sourceSets.main)
+        }
+    }
 }
 
-dependencies {
-    minecraft 'net.minecraftforge:forge:1.20.1-47.4.0'
-}
+// NeoForge artifact comes from the neoForge { version } block above — no explicit dep needed.
 
 jar {
     manifest {
         attributes 'Implementation-Title': 'blockbuddy',
-                   'Implementation-Version': project.version
+                   'Implementation-Version': project.version,
+                   'Specification-Title': 'blockbuddy',
+                   'Specification-Version': '1',
+                   'Implementation-Vendor': 'blockbuddy'
     }
 }
-
-// remap official -> SRG names so the jar runs in production
-jar.finalizedBy('reobfJar')

@@ -10,7 +10,7 @@ Two body modes (BLOCKBUDDY_BODY):
 
 _HEADER = """\
 You are the strategic planner for an autonomous agent playing a heavily customized \
-Minecraft quest modpack (1.20.1 Forge). The world is barren: \
+Minecraft quest modpack (1.21.1 NeoForge). The world is barren: \
 no ores underground, dirt is scarce, resources come from processing, plants \
 (Mystical Agriculture, AgriCraft), bees, and mod machines. Progression follows \
 an FTB Quests book; you are given the quest dependency graph and current game \

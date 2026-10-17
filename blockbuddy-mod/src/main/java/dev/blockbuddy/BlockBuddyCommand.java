@@ -7,6 +7,7 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.NonNullList;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -14,14 +15,14 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.RecipeType;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraftforge.common.capabilities.ForgeCapabilities;
-import net.minecraftforge.items.IItemHandler;
-import net.minecraftforge.items.ItemHandlerHelper;
-import net.minecraftforge.registries.ForgeRegistries;
+import net.neoforged.neoforge.capabilities.Capabilities;
+import net.neoforged.neoforge.items.IItemHandler;
+import net.neoforged.neoforge.items.ItemHandlerHelper;
 
 import java.util.Comparator;
 import java.util.HashMap;
@@ -50,12 +51,12 @@ public final class BlockBuddyCommand {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         var root = Commands.literal("blockbuddy")
-            .requires(src -> src.hasPermission(2))
+            // ponytail: no permission gate — singleplayer without cheats has level 0 and the command vanishes; LAN-with-cheats toggle is friction the test loop doesn't need
             .then(Commands.literal("spawn")
-                .executes(ctx -> spawn(ctx.getSource(), "Agent"))
+                .executes(ctx -> spawnNamed(ctx.getSource(), null, true))
                 .then(Commands.argument("name", StringArgumentType.word())
-                    .executes(ctx -> spawn(ctx.getSource(),
-                            StringArgumentType.getString(ctx, "name")))))
+                    .executes(ctx -> spawnNamed(ctx.getSource(),
+                            StringArgumentType.getString(ctx, "name"), false))))
             .then(Commands.literal("run")
                 .then(Commands.argument("cmd", StringArgumentType.greedyString())
                     .executes(ctx -> run(ctx.getSource(),
@@ -82,10 +83,25 @@ public final class BlockBuddyCommand {
                             StringArgumentType.getString(ctx, "spec"), false))))
             .then(Commands.literal("state")
                 .executes(ctx -> state(ctx.getSource())))
+            .then(Commands.literal("voice")
+                .executes(ctx -> voice(ctx.getSource(), null))
+                .then(Commands.argument("confirm", StringArgumentType.word())
+                    .executes(ctx -> voice(ctx.getSource(),
+                            StringArgumentType.getString(ctx, "confirm")))))
             .then(Commands.literal("stop")
-                .executes(ctx -> run(ctx.getSource(), "stop")));
+                .executes(ctx -> run(ctx.getSource(), "stop")))
+            .then(Commands.literal("reconnect")
+                .executes(ctx -> reconnect(ctx.getSource())));
         var node = dispatcher.register(root);
         dispatcher.register(Commands.literal("agent").redirect(node));
+    }
+
+    /** Max live companions per world. */
+    private static final int MAX_BUDDIES = 16;
+
+    private static List<BlockBuddyEntity> allBuddies(ServerPlayer player) {
+        return player.serverLevel().getEntitiesOfClass(
+                BlockBuddyEntity.class, player.getBoundingBox().inflate(1024.0));
     }
 
     private static BlockBuddyEntity nearest(ServerPlayer player) {
@@ -95,6 +111,7 @@ public final class BlockBuddyCommand {
                 .min(Comparator.comparingDouble(e -> e.distanceToSqr(player)))
                 .orElse(null);
     }
+
 
     private static int mine(CommandSourceStack src, String spec) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
@@ -106,13 +123,14 @@ public final class BlockBuddyCommand {
         String[] parts = spec.trim().split("\\s+");
         int count = parts.length > 1 ? Integer.parseInt(parts[1]) : 8;
         ResourceLocation id = ResourceLocation.tryParse(parts[0]);
-        Block block = id == null ? null : ForgeRegistries.BLOCKS.getValue(id);
+        Block block = id == null ? null : BuiltInRegistries.BLOCK.get(id);
         if (block == null || block == Blocks.AIR) {
             src.sendFailure(Component.literal("[blockbuddy] unknown block: " + parts[0]));
             return 0;
         }
         agent.startMining(block, count);
         src.sendSuccess(() -> Component.literal("[blockbuddy] mining " + count + "x " + id), false);
+        agent.say("on it, mining " + count + " " + (id == null ? parts[0] : id.getPath()) + "!");
         return 1;
     }
 
@@ -135,7 +153,7 @@ public final class BlockBuddyCommand {
         int moved = 0;
         for (ItemStack stack : agent.inv) {
             if (moved >= count || stack.isEmpty()) continue;
-            ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
+            ResourceLocation key = BuiltInRegistries.ITEM.getKey(stack.getItem());
             if (key == null || !key.getPath().equals(itemName)) continue;
             int take = Math.min(count - moved, stack.getCount());
             ItemStack transfer = stack.copyWithCount(take);
@@ -146,20 +164,19 @@ public final class BlockBuddyCommand {
             if (accepted < take) break; // player inventory full
         }
         final int total = moved;
-        src.sendSuccess(() -> Component.literal(
-                "[blockbuddy] handed over " + total + "x " + itemName), false);
+        agent.say(total > 0 ? "here, " + total + " " + itemName + " for you!" : "hmm, I don't have any " + itemName + ".");
         return total > 0 ? 1 : 0;
     }
 
     private static Item resolveItem(String name) {
         ResourceLocation id = ResourceLocation.tryParse(name);
-        if (id != null && ForgeRegistries.ITEMS.containsKey(id)) {
-            return ForgeRegistries.ITEMS.getValue(id);
+        if (id != null && BuiltInRegistries.ITEM.containsKey(id)) {
+            return BuiltInRegistries.ITEM.get(id);
         }
         // bare name: first registry entry with that path (any namespace)
-        for (ResourceLocation key : ForgeRegistries.ITEMS.getKeys()) {
+        for (ResourceLocation key : BuiltInRegistries.ITEM.keySet()) {
             if (key.getPath().equals(name)) {
-                return ForgeRegistries.ITEMS.getValue(key);
+                return BuiltInRegistries.ITEM.get(key);
             }
         }
         return null;
@@ -215,9 +232,10 @@ public final class BlockBuddyCommand {
         NonNullList<ItemStack> inv = agent.inv;
         if (countIn(inv, target) >= wanted) return true;
         if (depth <= 0) return false;
-        List<CraftingRecipe> recipes = player.serverLevel().getRecipeManager()
+        List<RecipeHolder<CraftingRecipe>> recipes = player.serverLevel().getRecipeManager()
                 .getAllRecipesFor(RecipeType.CRAFTING);
-        for (CraftingRecipe recipe : recipes) {
+        for (RecipeHolder<CraftingRecipe> holder : recipes) {
+            CraftingRecipe recipe = holder.value();
             ItemStack result = recipe.getResultItem(player.serverLevel().registryAccess());
             if (result.isEmpty() || result.getItem() != target) continue;
             int missing = wanted - countIn(inv, target);
@@ -260,14 +278,18 @@ public final class BlockBuddyCommand {
         }
         boolean ok = craftRecursive(player, agent, target, wanted, 4);
         int have = countIn(agent.inv, target);
-        final ResourceLocation rid = ForgeRegistries.ITEMS.getKey(target);
+        final ResourceLocation rid = BuiltInRegistries.ITEM.getKey(target);
+        agent.say(ok ? "crafted " + have + " " + rid.getPath() + ", check me!"
+                : "can't make " + parts[0] + " — I'm missing ingredients.");
         if (ok) {
             src.sendSuccess(() -> Component.literal(
                     "[blockbuddy] crafted: agent now has " + have + "x " + rid), false);
+            agent.say("crafted " + have + " " + rid.getPath() + ", check me!");
             return 1;
         }
         src.sendFailure(Component.literal("[blockbuddy] cannot craft " + parts[0]
                 + " — missing base ingredients (agent has " + have + ")"));
+        agent.say("can't make " + parts[0] + " — I'm missing ingredients.");
         return 0;
     }
 
@@ -291,14 +313,14 @@ public final class BlockBuddyCommand {
             if (moved >= count) break;
             BlockEntity be = player.serverLevel().getBlockEntity(pos);
             if (be == null) continue;
-            IItemHandler handler = be.getCapability(ForgeCapabilities.ITEM_HANDLER)
-                    .resolve().orElse(null);
+            IItemHandler handler = player.serverLevel().getCapability(
+                    Capabilities.ItemHandler.BLOCK, pos, player.serverLevel().getBlockState(pos), be, null);
             if (handler == null) continue;
             if (take) {
                 for (int slot = 0; slot < handler.getSlots() && moved < count; slot++) {
                     ItemStack in = handler.getStackInSlot(slot);
                     if (in.isEmpty()) continue;
-                    ResourceLocation key = ForgeRegistries.ITEMS.getKey(in.getItem());
+                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(in.getItem());
                     if (key == null || !key.getPath().equals(itemName)) continue;
                     ItemStack pulled = handler.extractItem(slot, count - moved, false);
                     moved += insertIntoAgent(agent, pulled);
@@ -307,7 +329,7 @@ public final class BlockBuddyCommand {
                 NonNullList<ItemStack> inv = agent.inv;
                 for (ItemStack stack : inv) {
                     if (moved >= count || stack.isEmpty()) continue;
-                    ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
+                    ResourceLocation key = BuiltInRegistries.ITEM.getKey(stack.getItem());
                     if (key == null || !key.getPath().equals(itemName)) continue;
                     int offer = Math.min(count - moved, stack.getCount());
                     ItemStack leftover = ItemHandlerHelper.insertItem(
@@ -322,6 +344,8 @@ public final class BlockBuddyCommand {
         final String verb = take ? "took" : "stored";
         src.sendSuccess(() -> Component.literal(
                 "[blockbuddy] " + verb + " " + total + "x " + itemName), false);
+        agent.say(take ? "grabbed " + total + " " + itemName + " from nearby!"
+                : "stashed " + total + " " + itemName + " away!");
         return total > 0 ? 1 : 0;
     }
 
@@ -335,7 +359,7 @@ public final class BlockBuddyCommand {
         Map<String, Integer> inv = new HashMap<>();
         for (ItemStack stack : agent.inv) {
             if (!stack.isEmpty()) {
-                ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
+                ResourceLocation key = BuiltInRegistries.ITEM.getKey(stack.getItem());
                 String name = key == null ? "unknown" : key.getPath();
                 inv.merge(name, stack.getCount(), Integer::sum);
             }
@@ -357,21 +381,76 @@ public final class BlockBuddyCommand {
         return 1;
     }
 
+    /** Bare `/blockbuddy spawn` names the first buddy Michael, then Michael2..16. */
     private static int spawn(CommandSourceStack src, String name) throws CommandSyntaxException {
+        return spawnNamed(src, name, name == null);
+    }
+
+    private static int spawnNamed(CommandSourceStack src, String want, boolean auto)
+            throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
+        List<BlockBuddyEntity> existing = allBuddies(player);
+        java.util.Set<String> taken = new java.util.HashSet<>();
+        for (BlockBuddyEntity b : existing) taken.add(b.getBuddyName());
+        if (existing.size() >= MAX_BUDDIES) {
+            src.sendFailure(Component.literal("[blockbuddy] 16 companions already out — no more room!"));
+            return 0;
+        }
+        String base = BuddyConfig.companionName.get();
+        if (base == null || base.isBlank()) base = "Michael";
+        String name = want;
+        if (auto) {
+            // ponytail: linear scan for first free Michael/MichaelN; N is tiny (<=16)
+            name = base;
+            int n = 2;
+            while (taken.contains(name)) name = base + n++;
+        } else if (taken.contains(want)) {
+            int n = 2;
+            name = want + n;
+            while (taken.contains(name)) name = want + (++n);
+        }
         BlockBuddyEntity agent = new BlockBuddyEntity(
                 BlockBuddy.BUDDY.get(), player.serverLevel());
         agent.setBuddyName(name);
+        agent.setOwner(player);
         agent.setCustomName(Component.literal(name));
         agent.setCustomNameVisible(true);
         agent.setPos(player.getX() + 1.0, player.getY(), player.getZ());
         agent.setPersistenceRequired();
         player.serverLevel().addFreshEntity(agent);
-        src.sendSuccess(() -> Component.literal("[blockbuddy] spawned agent '" + name + "'"), false);
+        agent.say("hey " + player.getGameProfile().getName() + "! Ready to help.");
+        agent.say("got it! toss me tools or say what you need - else I gear up in 60s");
+        final String finalName = name;
+        src.sendSuccess(() -> Component.literal("[blockbuddy] spawned agent '" + finalName + "'"), false);
         return 1;
     }
-
-    /** Built-in steering set: goto (x y z, or bare = look-at walk), follow, stop. */
+    /**
+     * Re-bind every orphaned companion: the one nearest the caller becomes
+     * theirs and follows; any extras hold position so only one moves with you.
+     * Fixes the stuck-twin glitch after a shim restart without needing spawn.
+     */
+    private static int reconnect(CommandSourceStack src) throws CommandSyntaxException {
+        ServerPlayer player = src.getPlayerOrException();
+        List<BlockBuddyEntity> buddies = allBuddies(player);
+        if (buddies.isEmpty()) {
+            src.sendFailure(Component.literal("[blockbuddy] no companions in this world — /blockbuddy spawn first"));
+            return 0;
+        }
+        buddies.sort(Comparator.comparingDouble(e -> e.distanceToSqr(player)));
+        BlockBuddyEntity mine = buddies.get(0);
+        int parked = 0;
+        for (BlockBuddyEntity b : buddies) {
+            if (b == mine) continue;
+            b.stopAll();
+            parked++;
+        }
+        mine.setOwner(player);
+        mine.say("found you again! sticking close.");
+        final String line = "[blockbuddy] reconnected '" + mine.getBuddyName() + "' to you"
+                + (parked > 0 ? " (" + parked + " other(s) parked)" : "");
+        src.sendSuccess(() -> Component.literal(line), false);
+        return 1;
+    }
     private static int run(CommandSourceStack src, String cmd) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
         BlockBuddyEntity agent = nearest(player);
@@ -406,7 +485,116 @@ public final class BlockBuddyCommand {
                 return 0;
             }
         }
-        src.sendSuccess(() -> Component.literal("[blockbuddy] -> " + cmd), false);
+        agent.say(switch (parts[0]) { case "stop" -> "stopping!"; case "follow" -> "coming!"; default -> "heading out!"; });
         return 1;
+    }
+
+    /**
+     * Voice opt-in status and Kokoro download. No args prints status without
+     * touching the network; `yes` downloads the ~340MB model after a two-step confirm.
+     */
+    private static int voice(CommandSourceStack src, String confirm) {
+        boolean enabled = BuddyConfig.voiceEnabled.get();
+        String voice = BuddyConfig.voiceName.get();
+        java.nio.file.Path model = BuddyConfig.modelFile();
+        java.nio.file.Path voices = BuddyConfig.voicesFile();
+        long mb = downloadedMb(model) + downloadedMb(voices);
+        if (confirm == null) {
+            final String line = "[blockbuddy] voice: " + (enabled ? "on" : "off")
+                    + ", voice=" + voice + ", downloaded=" + mb + "MB"
+                    + (enabled && !ready(model, voices)
+                            ? " — Kokoro voice is ~" + BuddyConfig.APPROX_MB
+                            + ". Type /blockbuddy voice yes to download."
+                            : "");
+            src.sendSuccess(() -> Component.literal(line), false);
+            return 1;
+        }
+        if (!"yes".equalsIgnoreCase(confirm.trim())) {
+            src.sendFailure(Component.literal("[blockbuddy] usage: /blockbuddy voice [yes]"));
+            return 0;
+        }
+        if (!enabled) {
+            src.sendFailure(Component.literal(
+                    "[blockbuddy] voice is off — enable voiceEnabled in the Mods menu Config screen first."));
+            return 0;
+        }
+        if (ready(model, voices)) {
+            src.sendSuccess(() -> Component.literal(
+                    "[blockbuddy] voice ready: " + voice + " (" + mb + "MB cached)."), false);
+            return 1;
+        }
+        if (!armed) {
+            armed = true;
+            src.sendSuccess(() -> Component.literal(
+                    "[blockbuddy] Kokoro voice is ~" + BuddyConfig.APPROX_MB
+                            + " — type /blockbuddy voice yes again to confirm."), false);
+            return 1;
+        }
+        armed = false;
+        download(src, model, BuddyConfig.MODEL_URL, BuddyConfig.MODEL_FILE);
+        download(src, voices, BuddyConfig.VOICES_URL, BuddyConfig.VOICES_FILE);
+        return 1;
+    }
+
+    private static volatile boolean armed;
+
+    private static boolean ready(java.nio.file.Path model, java.nio.file.Path voices) {
+        return java.nio.file.Files.isRegularFile(model) && java.nio.file.Files.isRegularFile(voices);
+    }
+
+    private static long downloadedMb(java.nio.file.Path file) {
+        try {
+            if (java.nio.file.Files.isRegularFile(file)) {
+                return java.nio.file.Files.size(file) / (1024 * 1024);
+            }
+        } catch (java.io.IOException ignored) {
+        }
+        return 0;
+    }
+
+    /** Plain HTTPS download on a daemon thread; progress via server.execute (thread-safe chat). */
+    private static void download(CommandSourceStack src, java.nio.file.Path dest, String url, String label) {
+        Thread worker = new Thread(() -> {
+            try {
+                java.nio.file.Files.createDirectories(dest.getParent());
+                java.net.URLConnection conn = new java.net.URL(url).openConnection();
+                conn.setConnectTimeout(15_000);
+                conn.setReadTimeout(60_000);
+                long total = conn.getContentLengthLong();
+                String start = "[blockbuddy] downloading " + label + " ("
+                        + (total > 0 ? total / (1024 * 1024) + "MB" : "size unknown") + ")...";
+                src.getServer().execute(() -> src.sendSuccess(() -> Component.literal(start), false));
+                try (java.io.InputStream in = conn.getInputStream();
+                        java.io.OutputStream out = java.nio.file.Files.newOutputStream(dest,
+                                java.nio.file.StandardOpenOption.CREATE,
+                                java.nio.file.StandardOpenOption.TRUNCATE_EXISTING)) {
+                    byte[] buf = new byte[1 << 20];
+                    long done = 0;
+                    int lastPct = -1;
+                    int n;
+                    while ((n = in.read(buf)) >= 0) {
+                        out.write(buf, 0, n);
+                        done += n;
+                        if (total > 0) {
+                            int pct = (int) (done * 100 / total);
+                            if (pct / 25 > lastPct / 25) {
+                                lastPct = pct;
+                                final String prog = "[blockbuddy] " + label + ": " + pct + "% ("
+                                        + done / (1024 * 1024) + "MB)";
+                                src.getServer().execute(() -> src.sendSuccess(() -> Component.literal(prog), false));
+                            }
+                        }
+                    }
+                }
+                final String fin = "[blockbuddy] downloaded " + label + " ("
+                        + downloadedMb(dest) + "MB).";
+                src.getServer().execute(() -> src.sendSuccess(() -> Component.literal(fin), false));
+            } catch (Exception e) {
+                src.getServer().execute(
+                        () -> src.sendFailure(Component.literal("[blockbuddy] download failed: " + e.getMessage())));
+            }
+        }, "blockbuddy-voice-dl");
+        worker.setDaemon(true);
+        worker.start();
     }
 }

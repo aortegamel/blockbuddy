@@ -21,6 +21,9 @@ INSTANCE_MC = Path(_mc)
 SRC = ROOT / "bridge" / "minescript" / "agent_bridge.py"
 
 
+AUTORUN = 'autorun[*]=agent_bridge'
+
+
 def main():
     ms_dir = INSTANCE_MC / "minescript"
     ms_dir.mkdir(exist_ok=True)
@@ -31,10 +34,16 @@ def main():
     config = ms_dir / "config.txt"
     if not config.exists():
         python = shutil.which("python") or sys.executable
-        config.write_text(f'python="{python}"\n', encoding="utf-8")
+        config.write_text(f'python="{python}"\n{AUTORUN}\n', encoding="utf-8")
         print(f"wrote {config} (python={python})")
     else:
-        print(f"config exists, not touching: {config}")
+        text = config.read_text(encoding="utf-8")
+        if "autorun[*]" not in text:
+            # ponytail: append, never rewrite — player may have their own autoruns
+            config.write_text(text.rstrip("\n") + f"\n{AUTORUN}\n", encoding="utf-8")
+            print(f"appended autorun to {config} — bridge connects on every world join, no chat command needed")
+        else:
+            print(f"config exists with autorun, not touching: {config}")
 
 
 if __name__ == "__main__":

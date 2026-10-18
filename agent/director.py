@@ -20,6 +20,11 @@ _LOG = logging.getLogger(__name__)
 _AMBIENT = frozenset({'night', 'rain', 'awayreturn', 'newitem', 'longsilence', 'choice'})
 _DANGER = frozenset({'danger', 'playerhurt', 'buddyhurt', 'hurt', 'guard'})
 _CATCHPHRASES = ('Pocket-sized courage.', 'One good block at a time.')
+_CHOICE_PAIRS = (('build a shelter', 'explore a little'), ('tidy up camp', 'watch the stars'),
+                 ('check the garden', 'rest a moment'), ('mend the tools', 'scout nearby'))
+_RETRY_INSTRUCTION = '\nStart with completely different words. Do not reuse any recent opening.'
+_NEUTRAL_REPLY = 'Got it.'
+_RETRYABLE = frozenset({'repeated_opening', 'repeated_line', 'catchphrase_limit'})
 
 
 def clean_line(value):
@@ -82,6 +87,7 @@ class Director:
         self.facts = []
         self.choice = None
         self._last_choice = float('-inf')
+        self._choice_index = 0
         self._pending = {}
         self._sequence = 0
         self._said_at = deque()
@@ -116,6 +122,15 @@ class Director:
                     and len(choice['options']) == 2
                     and all(isinstance(option, str) and option for option in choice['options'])):
                 self.choice = choice
+                for index, pair in enumerate(_CHOICE_PAIRS):
+                    if list(pair) == choice['options']:
+                        self._choice_index = index
+                        break
+            try:
+                if self.choice is None:
+                    self._choice_index = int(data.get('choice_index', 0)) % len(_CHOICE_PAIRS)
+            except (TypeError, ValueError):
+                self._choice_index = 0
             offered_at = data.get('choice_offered_at', 0)
             elapsed = max(0, time.time() - float(offered_at))
             if offered_at:
@@ -137,7 +152,8 @@ class Director:
                 elapsed = max(0, self.clock() - self._last_choice)
                 offered_at = time.time() - elapsed if elapsed != float('inf') else 0
                 json.dump({'facts': self.facts[-20:], 'choice': self.choice,
-                           'choice_offered_at': offered_at}, stream, ensure_ascii=False)
+                           'choice_offered_at': offered_at,
+                           'choice_index': self._choice_index}, stream, ensure_ascii=False)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.memory_path)
@@ -186,6 +202,7 @@ class Director:
                 if chosen:
                     self._remember('choices', f'{self.state.get("player_name", "The player")} chose {chosen}.')
                     self.choice = None
+                    self._choice_index = (self._choice_index + 1) % len(_CHOICE_PAIRS)
                     self._save_memory()
             if respond:
                 self._enqueue({'type': 'reply', 'text': text, 'chosen': chosen})
@@ -205,6 +222,12 @@ class Director:
         event = dict(event)
         event['type'] = event['type'].strip().lower()
         with self._condition:
+            incoming = event.get('name')
+            if isinstance(incoming, str) and incoming.strip():
+                known = self.state.get('name') or self.state.get('buddy_name')
+                if (isinstance(known, str) and known.strip()
+                        and incoming.strip().casefold() != known.strip().casefold()):
+                    return False
             self.last_event = event
             if event.get('name'):
                 self.state['name'] = event['name']
@@ -253,6 +276,11 @@ class Director:
                     and old_distance > 32 and distance <= 12):
                 self._enqueue({'type': 'awayreturn'})
             self.state = current
+            buddy = current.get('buddy_name')
+            if isinstance(buddy, str) and buddy.strip():
+                self.state['name'] = buddy.strip()
+            elif isinstance(current.get('name'), str) and current['name'].strip():
+                self.state['name'] = current['name'].strip()
             player_name = current.get('player_name')
             if player_name:
                 self._remember('player', f'The player is {player_name}.')
@@ -271,8 +299,8 @@ class Director:
                 and self.state.get('health', 20) > 12 and world.get('daytime', True)
                 and self.state.get('job', 'idle') in {'idle', 'follow', 'following', 'stopped', 'wait'})
         if calm and self.choice is None and now - self._last_choice >= 600:
-            options = ['build a shelter', 'explore a little']
-            self._enqueue({'type': 'choice', 'options': options})
+            pair = _CHOICE_PAIRS[self._choice_index % len(_CHOICE_PAIRS)]
+            self._enqueue({'type': 'choice', 'options': [pair[0], pair[1]]})
         elif not self._pending:
             self._enqueue({'type': 'longsilence'})
 
@@ -299,6 +327,93 @@ class Director:
                    'recent_openings': [' '.join(words) for words in self._openings],
                    'recent_openings_max': 10, 'last_lines_max': 8}
         return system, json.dumps(payload, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _choice_line(line, event):
+        options = event.get('options')
+        if (event['type'] == 'choice' and isinstance(options, list) and len(options) == 2
+                and all(isinstance(option, str) and option for option in options)
+                and not all(option.casefold() in line.casefold() for option in options)):
+            return f'Your call: 1) {options[0]}, or 2) {options[1]}?'
+        return line
+
+    def _is_choice_template(self, line, event):
+        """Check forced Your-call lines that share an opening across pairs."""
+        options = event.get('options')
+        return (event['type'] == 'choice' and isinstance(options, list) and len(options) == 2
+                and line.startswith('Your call: 1)'))
+
+    def _suppression_reason(self, line, event):
+        """Name why a candidate line stays silent. Caller holds the condition."""
+        opening = _opening(line)
+        catchphrase = any(phrase.casefold() in line.casefold() for phrase in _CATCHPHRASES)
+        major = (event['type'] != 'reply' and event.get('ok', True)
+                 and (event.get('major') is True
+                      or event['type'] in {'saved', 'rare_find', 'milestone'}))
+        if not line or not opening:
+            return 'empty_completion'
+        forced = self._is_choice_template(line, event)
+        if not forced and opening in self._openings:
+            return 'repeated_opening'
+        if not forced and line in self.lines:
+            return 'repeated_line'
+        if catchphrase and (not major or len(self._catchphrases) < 9
+                            or any(self._catchphrases) or event['type'] in _DANGER):
+            return 'catchphrase_limit'
+        return None
+
+    def _fallback_line(self, event):
+        """Last-resort speech for blocked or failed completions."""
+        text = event.get('fallback')
+        if not (isinstance(text, str) and text.strip()):
+            if event['type'] != 'reply':
+                return None
+            text = _NEUTRAL_REPLY
+        line = self._choice_line(clean_line(text), event)
+        if line:
+            return line
+        if event['type'] != 'reply':
+            return None
+        return _NEUTRAL_REPLY
+
+    def _deliver(self, line, event):
+        """Echo a final line and record it. Caller holds the condition."""
+        if self._closed:
+            self.last_suppression = 'closed'
+            return None
+        try:
+            self.bridge.echo(line)
+        except Exception:
+            self.last_suppression = 'echo_error'
+            _LOG.warning('Could not send companion chat', exc_info=True)
+            return None
+        now = self.clock()
+        self.lines.append(line)
+        self.history.append({'role': 'assistant', 'content': line})
+        self._openings.append(_opening(line))
+        self._catchphrases.append(any(phrase.casefold() in line.casefold() for phrase in _CATCHPHRASES))
+        self._said_at.append(now)
+        self._type_times[event['type']] = now
+        self._last_activity = now
+        if event['type'] in _AMBIENT:
+            self._last_ambient = now
+        if event['type'] == 'choice' and isinstance(event.get('options'), list):
+            self.choice = {'options': event['options']}
+            self._last_choice = now
+            self._save_memory()
+        return line
+
+    def _speak_fallback(self, event, suppression):
+        """Deliver fallback speech under lock. Returns the line or None."""
+        with self._condition:
+            self.last_suppression = suppression
+            if self._closed:
+                self.last_suppression = 'closed'
+                return None
+            line = self._fallback_line(event)
+            if line is None:
+                return None
+            return self._deliver(line, event)
 
     def process_once(self):
         """Process one eligible event. Tests can call this without a worker."""
@@ -333,59 +448,54 @@ class Director:
                 raw = self.complete(system, prompt, max_tokens=100, history=history, temperature=0.8)
                 name = str(self.state.get('name') or self.state.get('buddy_name') or 'Michael')
                 raw = re.sub(r'^\s*' + re.escape(name) + r'\s*:\s*', '', str(raw), flags=re.I)
-                line = clean_line(raw)
+                line = self._choice_line(clean_line(raw), event)
             except Exception:
-                self.last_suppression = 'completion_error'
                 _LOG.warning('Companion voice failed', exc_info=True)
-                return None
-            if event['type'] == 'choice':
-                options = event['options']
-                if not all(option.casefold() in line.casefold() for option in options):
-                    line = f'Your call: 1) {options[0]}, or 2) {options[1]}?'
+                spoken = self._speak_fallback(event, 'completion_error')
+                if spoken is not None:
+                    self._speak(spoken)
+                return spoken
             with self._condition:
-                opening = _opening(line)
-                catchphrase = any(phrase.casefold() in line.casefold() for phrase in _CATCHPHRASES)
-                major = (event['type'] != 'reply' and event.get('ok', True)
-                         and (event.get('major') is True
-                              or event['type'] in {'saved', 'rare_find', 'milestone'}))
-                if self._closed:
-                    self.last_suppression = 'closed'
-                    return None
-                if not line or not opening:
-                    self.last_suppression = 'empty_completion'
-                    return None
-                if opening in self._openings:
-                    self.last_suppression = 'repeated_opening'
-                    return None
-                if line in self.lines:
-                    self.last_suppression = 'repeated_line'
-                    return None
-                if catchphrase and (not major or len(self._catchphrases) < 9
-                                    or any(self._catchphrases) or event['type'] in _DANGER):
-                    self.last_suppression = 'catchphrase_limit'
-                    return None
+                suppression = self._suppression_reason(line, event)
+                retry_system = system + _RETRY_INSTRUCTION if suppression in _RETRYABLE else None
+            if retry_system is not None:
                 try:
-                    self.bridge.echo(line)
+                    raw = self.complete(retry_system, prompt, max_tokens=100, history=history,
+                                        temperature=0.8)
+                    name = str(self.state.get('name') or self.state.get('buddy_name') or 'Michael')
+                    raw = re.sub(r'^\s*' + re.escape(name) + r'\s*:\s*', '', str(raw), flags=re.I)
+                    retried = self._choice_line(clean_line(raw), event)
                 except Exception:
-                    self.last_suppression = 'echo_error'
-                    _LOG.warning('Could not send companion chat', exc_info=True)
-                    return None
-                now = self.clock()
-                self.lines.append(line)
-                self.history.append({'role': 'assistant', 'content': line})
-                self._openings.append(opening)
-                self._catchphrases.append(catchphrase)
-                self._said_at.append(now)
-                self._type_times[event['type']] = now
-                self._last_activity = now
-                if event['type'] in _AMBIENT:
-                    self._last_ambient = now
-                if event['type'] == 'choice':
-                    self.choice = {'options': event['options']}
-                    self._last_choice = now
-                    self._save_memory()
-            self._speak(line)
-            return line
+                    retried = None
+                if retried is not None:
+                    with self._condition:
+                        retry_suppression = self._suppression_reason(retried, event)
+                        if retry_suppression is None:
+                            spoken = self._deliver(retried, event)
+                        else:
+                            line, suppression, spoken = retried, retry_suppression, None
+                    if spoken is not None:
+                        self._speak(spoken)
+                        return spoken
+                    if retry_suppression is None:
+                        return None
+            with self._condition:
+                if suppression is None:
+                    if self._closed:
+                        self.last_suppression = 'closed'
+                        return None
+                    spoken = self._deliver(line, event)
+                else:
+                    spoken = None
+            if spoken is not None:
+                self._speak(spoken)
+                return spoken
+            if suppression is None:
+                return None
+            fallback = self._speak_fallback(event, suppression)
+            if fallback is not None:
+                self._speak(fallback)
+            return fallback
         finally:
             self._processing.release()
 

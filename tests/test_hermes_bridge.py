@@ -214,7 +214,8 @@ class PlayerFilterTests(unittest.TestCase):
         })()
         with patch.object(bridge.time, "sleep"), patch.object(bridge, "_agent_state") as state:
             bridge.nl_watch(game, llm, lambda _: None, poll_interval=0, idle_timeout=999999,
-                            max_polls=2, director=director, context={"player": game.state})
+                            max_polls=2, director=director,
+                            context={"player": game.state, "buddy": game.agent_state})
         self.assertEqual(game.commands.count("/blockbuddy run follow"), 1)
         self.assertEqual(len(llm.calls), 1)
         self.assertEqual(calls, 3)
@@ -287,6 +288,120 @@ class GearTests(unittest.TestCase):
                 thread.join(2)
                 self.assertFalse(thread.is_alive())
 
+
+class NullBuddyTests(unittest.TestCase):
+    def test_missing_buddy_has_no_form(self):
+        self.assertFalse(bridge._has_buddy(None))
+        self.assertFalse(bridge._has_buddy({"agent": None}))
+        self.assertTrue(bridge._has_buddy({"name": "Michael"}))
+
+    def test_null_buddy_skips_heartbeat_and_idle_gear(self):
+        game = FakeGame()
+        director = type("SilentDirector", (), {
+            "observe": lambda *args, **kwargs: None,
+            "player": lambda *args, **kwargs: None,
+            "result": lambda *args, **kwargs: None,
+        })()
+        with patch.object(bridge, "_agent_state", return_value=None):
+            with patch.object(bridge.time, "sleep"):
+                bridge.nl_watch(game, FakeLLM(), lambda _: None, poll_interval=0,
+                                idle_timeout=-1, max_polls=3, director=director,
+                                context={"player": game.state, "buddy": {"agent": None}})
+        self.assertNotIn("/blockbuddy brain on", game.commands)
+        self.assertFalse(any(command.startswith(("/blockbuddy mine", "/blockbuddy craft"))
+                             for command in game.commands))
+
+    def test_null_agent_dict_reports_quiet_inventory(self):
+        game = FakeGame()
+        reports = []
+        with patch.object(bridge, "_agent_state", return_value={"agent": None}):
+            bridge._gear_run(game, reports.append, cancel_event=threading.Event())
+        self.assertEqual(game.commands, [])
+        self.assertEqual(reports, [])
+
+    def test_observe_passes_distance_and_nearby(self):
+        seen = []
+        director = type("RecordingDirector", (), {
+            "observe": lambda self, state: seen.append(state),
+            "player": lambda *args, **kwargs: None,
+            "result": lambda *args, **kwargs: None,
+        })()
+        game = FakeGame(state={"player_name": "Alex",
+                               "position": {"x": 0.0, "y": 64.0, "z": 0.0}},
+                        agent_state={"name": "Michael", "pos": [40, 64, 0]})
+        cache = {"player": game.state}
+        stop = threading.Event()
+        with patch.object(bridge, "_agent_state", return_value=dict(game.agent_state)):
+            with patch.object(bridge.time, "sleep"):
+                thread = threading.Thread(target=bridge._observe_loop,
+                                          args=(game, director, cache, stop))
+                thread.start()
+                stop.wait(0.2) if hasattr(stop, "wait") else None
+                stop.set()
+                thread.join(2)
+        self.assertTrue(seen)
+        first = seen[0]
+        self.assertEqual(first["player_distance"], 40.0)
+        self.assertFalse(first["player_nearby"])
+
+    def test_return_trip_marks_nearby(self):
+        distance, nearby = bridge._proximity({"x": 0, "y": 64, "z": 0}, [8, 64, 0])
+        self.assertAlmostEqual(distance, 8.0)
+        self.assertTrue(nearby)
+
+    def test_distance_transition_fires_awayreturn(self):
+        from agent.director import Director
+        from pathlib import Path
+        import tempfile
+        echo = type("Echo", (), {"echo": lambda self, line: None})()
+        with tempfile.TemporaryDirectory() as directory:
+            director = Director(echo, complete_fn=lambda *a, **k: "here",
+                                memory_path=Path(directory) / "memory.json",
+                                start_worker=False)
+            try:
+                director.observe({"player_distance": 40.0, "player_nearby": False})
+                director.observe({"player_distance": 8.0, "player_nearby": True})
+                self.assertIn("awayreturn", director._pending)
+            finally:
+                director.close()
+
+    def test_planks_probe_falls_back_and_fails_honestly(self):
+        game = FakeGame()
+        reports = []
+        calls = []
+        original = FakeGame._command
+        def command(fake, text):
+            calls.append(text)
+            words = text.split()
+            if words[:2] == ["/blockbuddy", "craft"] and words[2] == "minecraft:oak_planks":
+                # Vanilla guess stays unknown, so the probe must try the next id.
+                return
+            if words[:2] == ["/blockbuddy", "craft"] and words[2] == "oak_planks":
+                fake.agent_state["inventory"]["oak_planks"] = \
+                    fake.agent_state["inventory"].get("oak_planks", 0) + 16
+                fake.event("craft", item="oak_planks", count=16, ok=True)
+                return
+            original(fake, text)
+        with patch.object(FakeGame, "_command", command):
+            game.agent_state["inventory"] = {"oak_log": 8}
+            game.auto_effects = True
+            bridge._gear_run(game, reports.append, cancel_event=threading.Event())
+        self.assertEqual(reports, [])
+        self.assertIn("/blockbuddy craft minecraft:oak_planks 16", calls)
+        self.assertIn("/blockbuddy craft oak_planks 16", calls)
+
+    def test_planks_probe_reports_when_nothing_works(self):
+        game = FakeGame(auto_effects=False)
+        reports = []
+        game.agent_state["inventory"] = {"minecraft:oak_log": 8}
+        def chat(**kwargs):
+            game.commands.append(kwargs.get("text", ""))
+            game.chat("[agentstate] " + json.dumps(game.agent_state))
+            return True, {"sent": kwargs.get("text", "")}
+        game.responses["chat"] = chat
+        bridge._gear_run(game, reports.append, cancel_event=threading.Event())
+        self.assertEqual(len(reports), 1)
+        self.assertIn("planks", reports[0])
 
 if __name__ == "__main__":
     unittest.main()

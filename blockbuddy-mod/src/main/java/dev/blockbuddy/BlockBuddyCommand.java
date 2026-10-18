@@ -109,16 +109,39 @@ public final class BlockBuddyCommand {
                 BlockBuddyEntity.class, player.getBoundingBox().inflate(1024.0));
     }
 
+    // ponytail: ownership gate lives here so every command routes through it.
     private static BlockBuddyEntity nearest(ServerPlayer player) {
+        return nearest(player, true);
+    }
+
+    private static BlockBuddyEntity nearest(ServerPlayer player, boolean ownedOnly) {
         List<BlockBuddyEntity> agents = player.serverLevel().getEntitiesOfClass(
                 BlockBuddyEntity.class, player.getBoundingBox().inflate(96.0));
-        return agents.stream()
-                .min(Comparator.comparingDouble(e -> e.distanceToSqr(player)))
-                .orElse(null);
+        BlockBuddyEntity fallback = null;
+        double fallbackDist = Double.MAX_VALUE;
+        BlockBuddyEntity best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (BlockBuddyEntity buddy : agents) {
+            double distance = buddy.distanceToSqr(player);
+            if (player.getUUID().equals(buddy.getOwnerUuid())) {
+                if (distance < bestDist) {
+                    bestDist = distance;
+                    best = buddy;
+                }
+            } else if (!ownedOnly && distance < fallbackDist) {
+                fallbackDist = distance;
+                fallback = buddy;
+            }
+        }
+        return best != null ? best : fallback;
+    }
+
+    private static BlockBuddyEntity nearestFor(CommandSourceStack src, ServerPlayer player) {
+        return nearest(player, !(src.hasPermission(2) || src.getServer().isSingleplayer()));
     }
 
     private static BlockBuddyEntity requireBuddy(CommandSourceStack src, ServerPlayer player) {
-        BlockBuddyEntity agent = nearest(player);
+        BlockBuddyEntity agent = nearestFor(src, player);
         if (agent == null) {
             src.sendFailure(Component.literal("[blockbuddy] no agent within 96 blocks — /blockbuddy spawn first"));
         }
@@ -432,13 +455,16 @@ public final class BlockBuddyCommand {
 
     private static int state(CommandSourceStack src) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        return state(player, nearest(player));
+        return state(player, nearestFor(src, player));
     }
 
     public static int state(ServerPlayer player, BlockBuddyEntity agent) {
-        if (agent != null) agent.hearCommand();
+        if (agent == null) {
+            return 0;
+        }
+        agent.hearCommand();
         player.sendSystemMessage(Component.literal("[agentstate] " + stateJson(agent)));
-        return agent == null ? 0 : 1;
+        return 1;
     }
 
     public static JsonObject stateJson(BlockBuddyEntity agent) {
@@ -571,7 +597,7 @@ public final class BlockBuddyCommand {
 
     private static int brain(CommandSourceStack src, boolean on) throws CommandSyntaxException {
         ServerPlayer player = src.getPlayerOrException();
-        BlockBuddyEntity agent = requireBuddy(src, player);
+        BlockBuddyEntity agent = nearestFor(src, player);
         if (agent == null) return 0;
         agent.hearCommand();
         agent.setBrainVoice(on);

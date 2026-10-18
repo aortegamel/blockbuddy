@@ -1,6 +1,8 @@
 package dev.blockbuddy;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import com.google.gson.JsonObject;
@@ -51,6 +53,7 @@ public class BlockBuddyEntity extends PathfinderMob {
     private int brainVoiceTicks;
     private int miningWant;
     private int miningMined;
+    private final Set<BlockPos> miningSkipped = new HashSet<>();
 
     private UUID ownerUuid;
     private boolean guardMode = true;
@@ -58,6 +61,7 @@ public class BlockBuddyEntity extends PathfinderMob {
     private long gearedTick = -1;
     private long askedTick;
     private long lastTauntTick = -200;
+    private long lastHurtTick = -100;
 
     public BlockBuddyEntity(EntityType<? extends PathfinderMob> type, Level level) {
         super(type, level);
@@ -79,8 +83,12 @@ public class BlockBuddyEntity extends PathfinderMob {
         } else {
             line = "<" + buddyName + "> " + fallback;
         }
-        server.getServer().getPlayerList().broadcastSystemMessage(
-                net.minecraft.network.chat.Component.literal(line), false);
+        var text = net.minecraft.network.chat.Component.literal(line);
+        if (ownerUuid != null && server.getPlayerByUUID(ownerUuid) instanceof ServerPlayer owner) {
+            owner.sendSystemMessage(text);
+        } else {
+            server.getServer().getPlayerList().broadcastSystemMessage(text, false);
+        }
     }
 
     public void say(String text) {
@@ -94,7 +102,8 @@ public class BlockBuddyEntity extends PathfinderMob {
     @Override
     public boolean hurt(DamageSource source, float amount) {
         boolean hurt = super.hurt(source, amount);
-        if (hurt && amount > 0) {
+        if (hurt && amount > 0 && tickCount - lastHurtTick >= 100) {
+            lastHurtTick = tickCount;
             reportEvent("hurt", source.getMsgId(), (int) Math.ceil(amount), false, "ow! that hurt.");
         }
         return hurt;
@@ -194,6 +203,7 @@ public class BlockBuddyEntity extends PathfinderMob {
         if (id == null || (!tag && (!BuiltInRegistries.BLOCK.containsKey(id)
                 || BuiltInRegistries.BLOCK.get(id) == Blocks.AIR))) return false;
         cancelMining();
+        miningSkipped.clear();
         followUuid = null;
         gotoTarget = null;
         miningBlock = tag ? null : BuiltInRegistries.BLOCK.get(id);
@@ -366,6 +376,11 @@ public class BlockBuddyEntity extends PathfinderMob {
                 getNavigation().stop();
                 return;
             }
+            if (distanceToSqr(target) > 576.0D) {
+                teleportTo(target.getX(), target.getY(), target.getZ());
+                getNavigation().stop();
+                return;
+            }
             if (distanceToSqr(target) > 9.0D) getNavigation().moveTo(target, 1.0D);
             else getNavigation().stop();
         } else if (gotoTarget != null) {
@@ -384,10 +399,20 @@ public class BlockBuddyEntity extends PathfinderMob {
         return miningTag != null ? state.is(miningTag) : miningBlock != null && state.is(miningBlock);
     }
 
+    // ponytail: exposed faces break faster and keep the buddy out of its own hole.
+    private static boolean adjacentToAir(ServerLevel server, BlockPos pos) {
+        return server.getBlockState(pos.above()).isAir()
+                || server.getBlockState(pos.north()).isAir()
+                || server.getBlockState(pos.south()).isAir()
+                || server.getBlockState(pos.east()).isAir()
+                || server.getBlockState(pos.west()).isAir();
+    }
+
     private void finishMining(boolean ok, String reason) {
         String item = miningSelector;
         int mined = miningMined;
         cancelMining();
+        miningSkipped.clear();
         reportEvent(ok ? "mined" : "failed", item, mined, ok,
                 ok ? "mined " + mined + " " + item + "!" : reason + " Gathered " + mined + " " + item + ".");
     }
@@ -397,23 +422,36 @@ public class BlockBuddyEntity extends PathfinderMob {
         if (miningTarget != null && !matchesMining(server.getBlockState(miningTarget))) miningTarget = null;
         if (miningTarget == null) {
             BlockPos center = blockPosition();
-            double bestDist = Double.MAX_VALUE;
+            BlockPos footing = center.below();
+            BlockPos best = null;
+            double bestScore = Double.MAX_VALUE;
             for (BlockPos pos : BlockPos.betweenClosed(
                     center.offset(-12, -6, -12), center.offset(12, 6, 12))) {
+                // ponytail: never dig the block the buddy stands on; skip known-unreachable targets.
+                if (pos.equals(footing) || miningSkipped.contains(pos)) continue;
                 if (!matchesMining(server.getBlockState(pos))) continue;
-                double distance = pos.distSqr(center);
-                if (distance < bestDist) {
-                    bestDist = distance;
-                    miningTarget = pos.immutable();
+                double score = pos.distSqr(center);
+                if (!adjacentToAir(server, pos)) score += 1024.0D;
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = pos.immutable();
                 }
             }
+            miningTarget = best;
         }
         if (miningTarget == null) {
-            if (tickCount - miningProgressTick >= 100) finishMining(false, "I couldn't find any nearby.");
+            if (!miningSkipped.isEmpty()) {
+                // ponytail: every remaining candidate already timed out once.
+                finishMining(false, "I couldn't reach the blocks nearby.");
+            } else if (tickCount - miningProgressTick >= 100) {
+                finishMining(false, "I couldn't find any nearby.");
+            }
             return;
         }
         if (tickCount - miningProgressTick >= 200) {
-            finishMining(false, "I couldn't reach the block.");
+            miningSkipped.add(miningTarget);
+            miningTarget = null;
+            miningProgressTick = tickCount;
             return;
         }
         BlockState state = server.getBlockState(miningTarget);

@@ -137,15 +137,26 @@ class DirectorTests(unittest.TestCase):
         self.director.result({'type': 'crafted'})
         self.assertEqual(self.director.process_once(), 'Look! Two sticks.')
 
-    def test_repeated_opening_suppresses_a_different_line(self):
+    def test_repeated_opening_retries_then_falls_back(self):
         self.answer = 'There we go, a stick.'
         self.director.result({'type': 'crafted'})
         self.director.process_once()
-        self.answer = 'There we have a roof.'
+        answers = iter(['There we have a roof.', 'There we see more stone.'])
+        def blocked_complete(system, prompt, **kwargs):
+            self.calls.append((system, json.loads(prompt), kwargs))
+            return next(answers)
+        self.director.complete = blocked_complete
         self.director.result({'type': 'built'})
         self.assertIsNone(self.director.process_once())
+        self.assertEqual(len(self.calls), 3)
+        self.assertIn('completely different words', self.calls[-1][0])
         self.assertEqual(len(self.bridge.lines), 1)
         self.assertEqual(self.director.last_suppression, 'repeated_opening')
+        self.director.complete = self.complete
+        self.answer = 'Fresh words, a roof.'
+        self.director.result({'type': 'stored'})
+        self.assertEqual(self.director.process_once(), 'Fresh words, a roof.')
+        self.assertEqual(len(self.bridge.lines), 2)
 
     def test_catchphrase_needs_nine_plain_lines_and_never_fits_danger(self):
         self.answer = 'Pocket-sized courage.'
@@ -170,9 +181,14 @@ class DirectorTests(unittest.TestCase):
             self.director.result({'type': f'result{number}'})
             self.director.process_once()
             self.clock.advance(61)
-        self.answer = 'Small steps matter. Pocket-sized courage.'
+        answers = iter(['Small steps matter. Pocket-sized courage.',
+                        'Quiet words matter. Pocket-sized courage.'])
+        def blocked_complete(system, prompt, **kwargs):
+            self.calls.append((system, json.loads(prompt), kwargs))
+            return next(answers)
+        self.director.complete = blocked_complete
         self.director.player('Hello again')
-        self.assertIsNone(self.director.process_once())
+        self.assertEqual(self.director.process_once(), 'Got it.')
         self.assertEqual(self.director.last_suppression, 'catchphrase_limit')
 
     def test_prompt_keeps_eight_lines_and_ten_distinct_openings(self):
@@ -243,13 +259,17 @@ class DirectorTests(unittest.TestCase):
         self.director.process_once()
         self.clock.advance(600)
         self.director.observe({})
-        self.answer = 'What sounds good: 1) build a shelter, or 2) explore a little?'
-        self.director.process_once()
+        self.answer = 'What sounds good: 1) tidy up camp, or 2) watch the stars?'
+        first = self.director.process_once()
         self.assertIsNotNone(self.director.choice)
+        self.assertNotEqual(self.director.choice['options'], ['build a shelter', 'explore a little'])
         restored = self.make_director()
-        self.assertTrue(restored.player('BUILD A SHELTER!'))
-        self.assertIn('build a shelter', restored.facts[-1]['text'])
+        self.assertEqual(restored.choice['options'], self.director.choice['options'])
+        chosen_option = self.director.choice['options'][1]
+        self.assertTrue(restored.player(chosen_option.upper() + '!'))
+        self.assertIn(chosen_option, restored.facts[-1]['text'])
         self.assertEqual(self.bridge.lines.count(line), 1)
+        self.assertIn(first, self.bridge.lines)
 
     def test_danger_prevents_calm_choice(self):
         self.clock.advance(600)
@@ -287,6 +307,50 @@ class DirectorTests(unittest.TestCase):
         before = len(self.director.history)
         self.assertFalse(self.director.player('[agentstate] {"health":20}'))
         self.assertEqual(len(self.director.history), before)
+
+    def test_completion_error_speaks_event_fallback(self):
+        def failing_complete(*args, **kwargs):
+            raise RuntimeError('model offline')
+        self.director.complete = failing_complete
+        self.director.result({'type': 'crafted', 'fallback': 'Kept one spare torch.'})
+        self.assertEqual(self.director.process_once(), 'Kept one spare torch.')
+        self.assertEqual(self.director.last_suppression, 'completion_error')
+
+    def test_completion_error_keeps_reply_audible(self):
+        def failing_complete(*args, **kwargs):
+            raise RuntimeError('model offline')
+        self.director.complete = failing_complete
+        self.director.player('Are you there?')
+        self.assertEqual(self.director.process_once(), 'Got it.')
+
+    def test_cross_buddy_events_are_ignored(self):
+        self.director.observe({'buddy_name': 'Brass'})
+        self.assertTrue(self.director.result({'type': 'crafted', 'name': 'Brass'}))
+        self.assertFalse(self.director.result({'type': 'crafted', 'name': 'OtherBot'}))
+        self.director.process_once()
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(self.director.result({'type': 'crafted', 'name': 'Brass'}))
+        self.assertEqual(self.director.state['name'], 'Brass')
+
+    def test_choice_pairs_rotate_and_reuse_answers(self):
+        seen = set()
+        for _ in range(4):
+            self.clock.advance(600)
+            self.director.observe({})
+            self.director.process_once()
+            self.assertIsNotNone(self.director.choice)
+            pair = tuple(self.director.choice['options'])
+            self.assertEqual(len(pair), 2)
+            self.assertNotIn(pair, seen)
+            seen.add(pair)
+            last = self.bridge.lines[-1] if self.bridge.lines else ''
+            self.assertIn(pair[0], last)
+            self.assertIn(pair[1], last)
+            self.assertTrue(self.director.player('1'))
+            self.clock.advance(121)
+            self.director.process_once()
+            self.clock.advance(2)
+        self.assertEqual(len(seen), 4)
 
     def test_audio_errors_preserve_chat_and_default_needs_no_audio(self):
         self.director.result({'type': 'crafted'})

@@ -328,6 +328,60 @@ def _count(state, item):
                if isinstance(n, (int, float)) and not isinstance(n, bool))
 
 
+def _has_buddy(state):
+    """A missing companion reads as None or {"agent": None} on the wire."""
+    if state is None:
+        return False
+    if isinstance(state, dict) and "agent" in state and state["agent"] is None:
+        return False
+    return isinstance(state, dict)
+
+
+def _coords(pos):
+    try:
+        if isinstance(pos, dict):
+            return float(pos["x"]), float(pos["y"]), float(pos["z"])
+        if isinstance(pos, (list, tuple)) and len(pos) == 3:
+            return float(pos[0]), float(pos[1]), float(pos[2])
+    except (TypeError, ValueError, KeyError):
+        return None
+    return None
+
+
+def _proximity(player_pos, buddy_pos):
+    """Euclidean distance plus a 32-block nearby flag; (None, None) unknown."""
+    first, second = _coords(player_pos), _coords(buddy_pos)
+    if first is None or second is None:
+        return None, None
+    distance = ((first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
+                + (first[2] - second[2]) ** 2) ** 0.5
+    return distance, distance <= 32
+
+
+def _planks_total(state):
+    return sum(n for key, n in _inv(state).items()
+               if str(key).endswith("_planks")
+               if isinstance(n, (int, float)) and not isinstance(n, bool))
+
+
+def _planks_candidates(log_item):
+    """Vanilla-rule guess first, then the log's own namespace and bare path."""
+    bare = str(log_item).split(":")[-1]
+    wood = bare.removesuffix("_log").removesuffix("_stem").removeprefix("stripped_")
+    namespace = str(log_item).split(":")[0] if ":" in str(log_item) else "minecraft"
+    ordered = [f"minecraft:{wood}_planks"]
+    if namespace != "minecraft":
+        ordered.append(f"{namespace}:{wood}_planks")
+    ordered.append(f"{wood}_planks")
+    seen, out = set(), []
+    for candidate in ordered:
+        if candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    return out
+
+
+
 _GEAR_LOCK = threading.Lock()
 _GEAR_COMMAND_LOCK = threading.Lock()
 _GEAR_CANCEL = threading.Event()
@@ -355,7 +409,7 @@ def _gear_run(bridge_call, say_fn, cancel_event=None, director=None, idle=False)
 
     def ensure(command, predicate, timeout=120):
         current = state()
-        if not isinstance(current, dict):
+        if not _has_buddy(current):
             raise RuntimeError("I cannot read my inventory, so I stopped gearing.")
         if predicate(current):
             return current
@@ -364,7 +418,7 @@ def _gear_run(bridge_call, say_fn, cancel_event=None, director=None, idle=False)
         deadline = time.monotonic() + timeout
         while not cancel.is_set() and time.monotonic() < deadline:
             current = state()
-            if isinstance(current, dict) and predicate(current):
+            if _has_buddy(current) and predicate(current):
                 return current
             cancel.wait(0.5)
         raise RuntimeError("I could not finish that gear step.")
@@ -373,8 +427,8 @@ def _gear_run(bridge_call, say_fn, cancel_event=None, director=None, idle=False)
         current = state()
         if cancel.is_set():
             return
-        if not isinstance(current, dict):
-            raise RuntimeError("I cannot read my inventory, so I stopped gearing.")
+        if not _has_buddy(current):
+            return
         has_pick = lambda st: any(str(k).endswith("_pickaxe") and n > 0 for k, n in _inv(st).items())
         has_sword = lambda st: any(str(k).endswith("_sword") and n > 0 for k, n in _inv(st).items())
         if idle and has_pick(current) and has_sword(current):
@@ -384,10 +438,22 @@ def _gear_run(bridge_call, say_fn, cancel_event=None, director=None, idle=False)
         current = ensure("/blockbuddy mine #minecraft:logs 8", logs)
         log_item = max((k for k in _inv(current) if str(k).endswith(("_log", "_stem"))),
                        key=lambda k: _inv(current)[k])
-        bare = log_item.split(":")[-1]
-        wood = bare.removesuffix("_log").removesuffix("_stem").removeprefix("stripped_")
-        planks = f"minecraft:{wood}_planks"
-        ensure(f"/blockbuddy craft {planks} 16", lambda st: _count(st, planks) >= 16, 15)
+        picked = None
+        for candidate in _planks_candidates(log_item):
+            before = _planks_total(current)
+            if _count(current, candidate) >= 1:
+                picked = candidate
+                break
+            if not send(f"/blockbuddy craft {candidate} 16"):
+                raise RuntimeError("The bridge did not accept the gear command.")
+            current = state()
+            if not _has_buddy(current):
+                raise RuntimeError("I cannot read my inventory, so I stopped gearing.")
+            if _planks_total(current) > before or _count(current, candidate) >= 1:
+                picked = candidate
+                break
+        if picked is None:
+            raise RuntimeError(f"I could not craft planks from {log_item}.")
         ensure("/blockbuddy craft minecraft:stick 8", lambda st: _count(st, "minecraft:stick") >= 8, 15)
         ensure("/blockbuddy craft minecraft:wooden_pickaxe 1", has_pick, 15)
         ensure("/blockbuddy mine minecraft:stone 8", lambda st: _count(st, "minecraft:cobblestone") >= 8)
@@ -535,7 +601,7 @@ def _guard_trip(bridge_call, last_health, state=None, entities=None):
 
 def _observe_loop(bridge_call, director, cache, stop_event):
     """Read slow state away from the chat loop."""
-    last_health, last_guard = None, 0.0
+    last_health, last_guard, missing = None, 0.0, False
     while not stop_event.is_set():
         try:
             ok, player = _bc(bridge_call, "state")
@@ -546,24 +612,32 @@ def _observe_loop(bridge_call, director, cache, stop_event):
             entities = entities if ok else []
             if director is not None:
                 buddy = _agent_state(bridge_call, timeout=2, cancel_event=stop_event)
-                if isinstance(buddy, dict):
+                present = _has_buddy(buddy)
+                if present and isinstance(buddy, dict):
                     cache["buddy"] = buddy
+                elif not present:
+                    cache["buddy"] = {"agent": None}
                 buddy = cache.get("buddy", {})
+                missing = not _has_buddy(buddy)
+                distance, nearby = _proximity(player.get("position"),
+                                             buddy.get("pos", buddy.get("position")))
                 director.observe({**buddy, "buddy": buddy,
                                   "player_name": player.get("player_name"),
                                   "player_health": player.get("health"),
                                   "player_position": player.get("position"),
+                                  "player_distance": distance,
+                                  "player_nearby": nearby,
                                   "world_info": player.get("world_info", {}),
                                   "hostiles": _nearby_hostiles(player, entities),
                                   "job": "mining" if buddy.get("mining") else
                                          "following" if buddy.get("following") else "idle"})
             trip, last_health, _ = _guard_trip(bridge_call, last_health, player, entities)
-            if trip and time.monotonic() - last_guard > 30 and not _GEAR_LOCK.locked():
+            if trip and not missing and time.monotonic() - last_guard > 30 and not _GEAR_LOCK.locked():
                 last_guard = time.monotonic()
                 _bc(bridge_call, "chat", text="/blockbuddy run follow")
         except Exception:
             pass
-        stop_event.wait(5)
+        stop_event.wait(30 if missing else 5)
 
 
 def nl_watch(bridge_call, llm_complete, say_fn, poll_interval=1.5,
@@ -586,6 +660,16 @@ def nl_watch(bridge_call, llm_complete, say_fn, poll_interval=1.5,
             polls += 1
             time.sleep(poll_interval)
             try:
+                if director is not None and cache.get("buddy") is not None \
+                        and not _has_buddy(cache.get("buddy")):
+                    continue
+                if director is not None and cache.get("buddy") is None \
+                        and context is not None and "buddy" not in cache:
+                    buddy = _agent_state(bridge_call, timeout=2)
+                    if not _has_buddy(buddy):
+                        cache["buddy"] = buddy if buddy is not None else {"agent": None}
+                        continue
+                    cache["buddy"] = buddy
                 if director is not None and time.monotonic() - last_heartbeat >= 30:
                     ok, _ = _bc(bridge_call, "chat", text="/blockbuddy brain on")
                     if ok:
